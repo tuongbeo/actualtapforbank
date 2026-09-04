@@ -1,4 +1,6 @@
 const { randomUUID } = require("crypto");
+const { getAccountByName } = require("../lib/actualAccounts");
+const { addTransaction, syncBudget } = require("../lib/actualTransactions");
 
 const transactionSchema = {
   schema: {
@@ -67,12 +69,6 @@ const createTransaction = (request) => {
   };
 };
 
-const getAccountId = async (fastify, accountName) => {
-  const accounts = await fastify.actual.getAccounts();
-  const account = accounts.find((acc) => acc.name.toLowerCase() === accountName.toLowerCase());
-  return { accountId: account?.id, accounts };
-};
-
 const savePayeeLocation = async (fastify, payeeName, latitude, longitude) => {
   const payee = (await fastify.actual.getPayees()).find(
     ({ name }) => name.toLowerCase() === payeeName.trim().toLowerCase()
@@ -107,7 +103,7 @@ module.exports = async (fastify, opts) => {
 
     const transaction = createTransaction(request);
     const accountName = request.body.account;
-    const { accountId, accounts } = await getAccountId(fastify, accountName);
+    const { accountId, accounts } = await getAccountByName(fastify, accountName);
 
     if (!accountId) {
       return reply.code(400).send({
@@ -116,14 +112,7 @@ module.exports = async (fastify, opts) => {
       });
     }
 
-    const result = await fastify.actual.addTransactions(accountId, [transaction]);
-
-    if (result !== "ok") {
-      const errorMessage = result?.errors ? result.errors.join(", ") : JSON.stringify(result);
-      throw new Error(`Failed to add transaction: ${errorMessage}`);
-    }
-
-    fastify.log.info("Transaction added successfully");
+    await addTransaction(fastify, accountId, transaction);
 
     // Saving the payee location is best-effort: a failure here must not block
     // the transaction from syncing, so swallow and log rather than 500.
@@ -137,11 +126,8 @@ module.exports = async (fastify, opts) => {
 
     // Explicitly sync to the server so we catch errors (e.g. expired auth)
     // before responding, rather than returning 200 with a silent sync failure
-    try {
-      await fastify.actual.sync();
-      fastify.log.info("Sync completed successfully");
-    } catch (syncErr) {
-      fastify.log.error(`Sync failed after adding transaction: ${syncErr.message}`);
+    const syncResult = await syncBudget(fastify);
+    if (!syncResult.ok) {
       return reply.code(500).send({
         error: "Sync failed",
         message: "Transaction was saved locally but failed to sync to the server. It may be lost on restart.",
