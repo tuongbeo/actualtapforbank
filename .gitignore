@@ -6,6 +6,6 @@ node_modules/
 .DS_Store
 /bruno/environments/*
 local.sh
-.claude
+.claude/settings.local.json
 docs/
 .worktrees/
