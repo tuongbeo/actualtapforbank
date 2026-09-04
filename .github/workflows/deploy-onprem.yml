@@ -1,0 +1,46 @@
+name: Deploy actualtap (on-prem)
+
+# Builds and (re)deploys the actualtap bridge on this VM every time main
+# changes. Runs on a self-hosted runner registered specifically to this
+# fork (tuongbeo/actualtapforbank) -- the eidas-onprem runner used by the
+# clearspec repo is registered at the repo level and can't pick up jobs
+# for a different repo.
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, actualtap]
+    steps:
+      - uses: actions/checkout@v4
+
+      # actualtap-run/ (the compose stack, .env and .api_key) lives outside
+      # this checkout entirely -- it's the persistent runtime directory for
+      # this app, same convention as the other apps on this VM. This job
+      # only ever builds the image here and hands it off by tag.
+      - name: Build image
+        run: docker build -t actualtap:local .
+
+      - name: Deploy
+        run: |
+          cd /home/vm-user/apps/actualtap-run
+          docker compose up -d --remove-orphans
+          docker image prune -f
+
+      # actualtap's own healthcheck (see actualtap-run/compose.yml) already
+      # polls this on an interval -- this just waits for it to report
+      # healthy once after the restart above instead of declaring success
+      # the instant the new container starts.
+      - name: Wait for healthy
+        run: |
+          for i in $(seq 1 15); do
+            status=$(docker inspect --format='{{.State.Health.Status}}' actualtap 2>/dev/null || echo "missing")
+            echo "actualtap health: $status"
+            if [ "$status" = "healthy" ]; then exit 0; fi
+            sleep 2
+          done
+          echo "actualtap did not become healthy in time" >&2
+          docker logs --tail 50 actualtap
+          exit 1
