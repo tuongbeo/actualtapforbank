@@ -7,5 +7,6 @@ node_modules/
 /bruno/environments/*
 local.sh
 .claude/settings.local.json
-docs/
+docs/*
+!docs/superpowers/
 .worktrees/
