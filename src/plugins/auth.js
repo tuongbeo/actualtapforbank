@@ -35,9 +35,22 @@ module.exports = fp(async (fastify, opts) => {
 
   const { tenantsByKeycloakSub } = opts;
 
+  // The URL path prefix this app is deployed under (e.g. "/actual-transfer-hub"), derived by
+  // the caller from APP_BASE_URL. Defaults to "" (root deployment), which also keeps any test
+  // harness that doesn't pass it working exactly as before.
+  //
+  // Direction matters: the documented reverse-proxy setup STRIPS the prefix before forwarding,
+  // so request.url server-side is always unprefixed ("/admin/...") and all routing/matching
+  // below stays unprefixed. The prefix is added ONLY to URLs handed back to the browser
+  // (redirect Location headers, and the returnTo the browser will later be sent to), because
+  // the browser resolves those against the external origin where the prefix still exists --
+  // nginx then strips it again on the way back in.
+  const basePath = opts.basePath || "";
+
   // Only accept a same-origin relative path (e.g. "/admin/foo"); reject anything that could
   // send the browser off-site after login: protocol-relative ("//evil.example.com/"), an
   // absolute URL ("https://evil.example.com/" -- contains "://"), or a non-string/empty value.
+  // The fallback is browser-facing, so it carries the deployment prefix.
   const sanitizeReturnTo = (value) => {
     if (
       typeof value === "string" &&
@@ -50,20 +63,34 @@ module.exports = fp(async (fastify, opts) => {
     ) {
       return value;
     }
-    return "/admin/";
+    return `${basePath}/admin/`;
   };
 
-  const NO_TENANT_REQUIRED_PATHS = new Set([
+  const UNPREFIXED_NO_TENANT_REQUIRED_PATHS = [
     "/admin",
     "/admin/",
     "/admin/index.html",
     "/admin/api/me",
     "/admin/api/register",
+  ];
+
+  // Both forms are listed: the unprefixed ones are what this app actually sees behind the
+  // documented (prefix-stripping) reverse proxy, while the prefixed ones keep the allowlist
+  // correct for a proxy that forwards the prefix intact.
+  const NO_TENANT_REQUIRED_PATHS = new Set([
+    ...UNPREFIXED_NO_TENANT_REQUIRED_PATHS,
+    ...(basePath ? UNPREFIXED_NO_TENANT_REQUIRED_PATHS.map((p) => `${basePath}${p}`) : []),
   ]);
 
+  // Matches "/admin..." and, if deployed under a prefix, "<basePath>/admin..." too, so the
+  // guard never silently disengages (leaving /admin/* wide open) if a proxy forwards the
+  // prefix rather than stripping it.
+  const isAdminPath = (url, suffix = "") =>
+    url.startsWith(`/admin${suffix}`) || (basePath !== "" && url.startsWith(`${basePath}/admin${suffix}`));
+
   fastify.addHook("preHandler", async (request, reply) => {
-    if (!request.url.startsWith("/admin")) return;
-    if (request.url.startsWith("/admin/login") || request.url.startsWith("/admin/callback")) return;
+    if (!isAdminPath(request.url)) return;
+    if (isAdminPath(request.url, "/login") || isAdminPath(request.url, "/callback")) return;
 
     if (!request.session.userSub) {
       if (request.method !== "GET") {
@@ -73,8 +100,14 @@ module.exports = fp(async (fastify, opts) => {
         reply.code(401).send({ error: "Unauthorized" });
         return;
       }
-      const returnTo = encodeURIComponent(request.url);
-      reply.redirect(`/admin/login?returnTo=${returnTo}`);
+      // request.url is the path as this app sees it (unprefixed behind the documented
+      // prefix-stripping proxy). Both the Location and the returnTo inside it are resolved by
+      // the BROWSER against the external origin, so both need the deployment prefix -- unless
+      // the request already arrived carrying it (a non-stripping proxy), in which case adding
+      // it again would double it.
+      const externalUrl = basePath && !request.url.startsWith(`${basePath}/`) ? `${basePath}${request.url}` : request.url;
+      const returnTo = encodeURIComponent(externalUrl);
+      reply.redirect(`${basePath}/admin/login?returnTo=${returnTo}`);
       return;
     }
 
@@ -92,7 +125,7 @@ module.exports = fp(async (fastify, opts) => {
 
     reply.code(403).send({
       error: "No tenant associated with this account",
-      message: "Visit /admin/ to connect your own Actual Budget account.",
+      message: `Visit ${basePath}/admin/ to connect your own Actual Budget account.`,
     });
   });
 
@@ -152,7 +185,7 @@ module.exports = fp(async (fastify, opts) => {
   fastify.post("/admin/logout", async (request, reply) => {
     const endSessionUrl = oidcClient.endSessionUrl
       ? oidcClient.endSessionUrl({ post_logout_redirect_uri: `${APP_BASE_URL}/admin/login` })
-      : "/admin/login";
+      : `${basePath}/admin/login`;
     await request.session.destroy();
     reply.redirect(endSessionUrl);
   });

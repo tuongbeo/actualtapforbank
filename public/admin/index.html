@@ -81,6 +81,13 @@
   </div>
 
   <script>
+    // Deployment path prefix, derived from the URL this page was served at, so the admin UI
+    // works both at the root ("/admin/" -> BASE = "") and under a reverse-proxy prefix
+    // ("/actual-transfer-hub/admin/" -> BASE = "/actual-transfer-hub"). Every fetch below is
+    // built as BASE + "/admin/..." because a root-absolute path would otherwise resolve
+    // against the origin and escape the prefix.
+    const BASE = location.pathname.replace(/\/admin(\/.*)?$/, "");
+
     async function api(method, path, body) {
       const response = await fetch(path, {
         method,
@@ -95,7 +102,7 @@
     let currentName = null; // null = unsaved new template
 
     async function refreshList() {
-      const templates = await api("GET", "/admin/api/templates");
+      const templates = await api("GET", BASE + "/admin/api/templates");
       const list = document.getElementById("template-list");
       list.innerHTML = "";
       for (const t of templates) {
@@ -142,9 +149,9 @@
 
       try {
         if (currentName === null) {
-          await api("POST", "/admin/api/templates", template);
+          await api("POST", BASE + "/admin/api/templates", template);
         } else {
-          await api("PUT", `/admin/api/templates/${encodeURIComponent(currentName)}`, template);
+          await api("PUT", `${BASE}/admin/api/templates/${encodeURIComponent(currentName)}`, template);
         }
         loadTemplate(template);
       } catch (err) {
@@ -155,7 +162,7 @@
     document.getElementById("delete-btn").onclick = async () => {
       if (currentName === null) return;
       if (!confirm(`Delete template "${currentName}"?`)) return;
-      await api("DELETE", `/admin/api/templates/${encodeURIComponent(currentName)}`);
+      await api("DELETE", `${BASE}/admin/api/templates/${encodeURIComponent(currentName)}`);
       document.getElementById("new-btn").onclick();
     };
 
@@ -171,7 +178,7 @@
       }
 
       try {
-        const result = await api("POST", "/admin/api/preview", {
+        const result = await api("POST", BASE + "/admin/api/preview", {
           rawText: document.getElementById("preview-raw").value,
           template,
         });
@@ -188,7 +195,7 @@
     document.getElementById("tab-account-map").onclick = async () => {
       document.getElementById("templates-tab").style.display = "none";
       document.getElementById("account-map-tab").style.display = "block";
-      const map = await api("GET", "/admin/api/account-map");
+      const map = await api("GET", BASE + "/admin/api/account-map");
       document.getElementById("account-map-editor").value = JSON.stringify(map, null, 2);
     };
     document.getElementById("account-map-save-btn").onclick = async () => {
@@ -202,7 +209,7 @@
         return;
       }
       try {
-        await api("PUT", "/admin/api/account-map", map);
+        await api("PUT", BASE + "/admin/api/account-map", map);
       } catch (err) {
         errorEl.textContent = err.message;
       }
@@ -212,7 +219,7 @@
       const errorEl = document.getElementById("reg-error");
       errorEl.textContent = "";
       try {
-        const result = await api("POST", "/admin/api/register", {
+        const result = await api("POST", BASE + "/admin/api/register", {
           actualSyncId: document.getElementById("reg-sync-id").value,
           actualPassword: document.getElementById("reg-password").value,
           actualEncryptionPassword: document.getElementById("reg-enc-password").value || undefined,
@@ -230,7 +237,7 @@
     };
 
     (async () => {
-      const { registered } = await api("GET", "/admin/api/me");
+      const { registered } = await api("GET", BASE + "/admin/api/me");
       if (registered) {
         document.getElementById("main-view").hidden = false;
         refreshList();

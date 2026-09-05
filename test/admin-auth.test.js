@@ -27,17 +27,22 @@ function fakeOidcClient({ sub = "sub-alice" } = {}) {
   };
 }
 
-async function buildApp({ oidcClient = fakeOidcClient(), tenantsByKeycloakSub = new Map([["sub-alice", { id: "alice", templatesStore: {} }]]) } = {}) {
+async function buildApp({
+  oidcClient = fakeOidcClient(),
+  tenantsByKeycloakSub = new Map([["sub-alice", { id: "alice", templatesStore: {} }]]),
+  appBaseUrl = APP_BASE_URL,
+  basePath,
+} = {}) {
   const app = fastify({ logger: false });
   app.decorate("config", {
     KEYCLOAK_ISSUER_URL: "https://keycloak.example.com/realms/actual",
     KEYCLOAK_CLIENT_ID: "actualtap-admin",
     KEYCLOAK_CLIENT_SECRET: "secret",
-    APP_BASE_URL,
+    APP_BASE_URL: appBaseUrl,
   });
   await app.register(fastifyCookie);
   await app.register(fastifySession, { secret: SESSION_SECRET, cookie: { secure: false } });
-  await app.register(authPlugin, { oidcClient, tenantsByKeycloakSub });
+  await app.register(authPlugin, { oidcClient, tenantsByKeycloakSub, basePath });
   app.get("/admin/", async () => ({ ok: true, tenant: true }));
   app.post("/admin/test-post", async (request) => ({ tenant: !!request.tenant }));
   app.get("/admin/api/me", async (request) => ({ tenant: !!request.tenant }));
@@ -238,6 +243,117 @@ describe("admin guard preHandler", () => {
     const app = await buildApp();
     const response = await app.inject({ method: "POST", url: "/admin/test-post" });
     assert.notStrictEqual(response.statusCode, 302);
+    await app.close();
+  });
+});
+
+// Final-review Finding 1: under a path-prefix deployment (APP_BASE_URL with a path component,
+// with the reverse proxy stripping the prefix before forwarding), every URL the server hands
+// back to the BROWSER must carry the prefix -- otherwise the browser resolves it against the
+// bare origin and lands outside the deployment (404).
+describe("path-prefix deployment (basePath)", () => {
+  const PREFIX = "/actual-transfer-hub";
+  const PREFIXED_BASE_URL = `https://cash.example.com${PREFIX}`;
+  const { deriveBasePath } = require("../src/lib/adminBasePath");
+
+  const buildPrefixedApp = (overrides = {}) =>
+    buildApp({
+      appBaseUrl: PREFIXED_BASE_URL,
+      basePath: deriveBasePath(PREFIXED_BASE_URL),
+      ...overrides,
+    });
+
+  it("redirects an unauthenticated GET to a prefixed login URL, with a prefixed returnTo", async () => {
+    const app = await buildPrefixedApp();
+    const response = await app.inject({ method: "GET", url: "/admin/" });
+
+    assert.strictEqual(response.statusCode, 302);
+    const location = response.headers.location;
+    assert.ok(
+      location.startsWith(`${PREFIX}/admin/login`),
+      `expected a prefixed login redirect, got: ${location}`
+    );
+    // The returnTo the browser will eventually be sent to must be prefixed too.
+    const returnTo = decodeURIComponent(location.split("returnTo=")[1]);
+    assert.strictEqual(returnTo, `${PREFIX}/admin/`);
+    await app.close();
+  });
+
+  it("defaults the post-callback redirect to the prefixed admin root", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const app = await buildPrefixedApp({ oidcClient });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    const cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+
+    assert.strictEqual(callbackResponse.statusCode, 302);
+    assert.strictEqual(callbackResponse.headers.location, `${PREFIX}/admin/`);
+    await app.close();
+  });
+
+  it("falls back to the prefixed admin root when returnTo is an off-site open redirect", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const app = await buildPrefixedApp({ oidcClient });
+
+    const loginResponse = await app.inject({
+      method: "GET",
+      url: "/admin/login?returnTo=" + encodeURIComponent("https://evil.example.com/"),
+    });
+    const cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    assert.strictEqual(callbackResponse.headers.location, `${PREFIX}/admin/`);
+    await app.close();
+  });
+
+  it("redirects logout to the prefixed login URL when there is no end-session endpoint", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const app = await buildPrefixedApp({ oidcClient });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const response = await app.inject({ method: "POST", url: "/admin/logout", headers: { cookie } });
+    assert.strictEqual(response.statusCode, 302);
+    assert.strictEqual(response.headers.location, `${PREFIX}/admin/login`);
+    await app.close();
+  });
+
+  it("still guards a request that arrives WITH the prefix intact (non-stripping proxy)", async () => {
+    const app = await buildPrefixedApp();
+    const response = await app.inject({ method: "GET", url: `${PREFIX}/admin/api/templates` });
+    // Must not fall through the guard unauthenticated; a redirect to login is the GET behaviour.
+    assert.strictEqual(response.statusCode, 302);
+    assert.ok(response.headers.location.startsWith(`${PREFIX}/admin/login`));
+    // ...and the returnTo must not have been double-prefixed.
+    const returnTo = decodeURIComponent(response.headers.location.split("returnTo=")[1]);
+    assert.strictEqual(returnTo, `${PREFIX}/admin/api/templates`);
+    await app.close();
+  });
+
+  it("keeps root-deployment URLs unprefixed when no basePath is given (backward compatible)", async () => {
+    const app = await buildApp(); // no basePath option at all
+    const response = await app.inject({ method: "GET", url: "/admin/" });
+    assert.strictEqual(response.headers.location, `/admin/login?returnTo=${encodeURIComponent("/admin/")}`);
     await app.close();
   });
 });

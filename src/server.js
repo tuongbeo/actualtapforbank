@@ -85,22 +85,19 @@ async function registerModules() {
     // Path-prefix aware: derives "" for a root-domain APP_BASE_URL (e.g.
     // "https://example.com") so the cookie path below becomes "/admin", and
     // e.g. "/app" for "https://example.com/app" so it becomes "/app/admin".
-    const basePath = new URL(adminUiConfig.appBaseUrl).pathname.replace(/\/$/, "");
-    await fastify.register(require("@fastify/session"), {
+    // The same value is handed to the auth plugin so every URL it sends back
+    // to the browser (login redirect, returnTo, logout) carries the prefix.
+    const { deriveBasePath } = require("./lib/adminBasePath");
+    const basePath = deriveBasePath(adminUiConfig.appBaseUrl);
+    // Handles both halves of the path-prefix problem: sessions keyed on the app-internal
+    // "/admin" path (which is what this process sees behind the prefix-stripping proxy) and a
+    // browser-facing Set-Cookie Path of "<basePath>/admin". See src/plugins/adminSession.js.
+    await fastify.register(require("./plugins/adminSession"), {
       secret: adminUiConfig.sessionSecret,
-      // saveUninitialized: false + a cookie path scoped to the admin UI (below) scope
-      // session handling to the admin UI only. @fastify/session's hooks otherwise run for
-      // EVERY request (this plugin is registered globally), so without this every /health,
-      // /transaction, /vietqr-transaction request would leak an unbounded, no-TTL
-      // in-memory session and set an unrelated Set-Cookie header.
-      saveUninitialized: false,
-      cookie: {
-        secure: adminUiConfig.appBaseUrl.startsWith("https://"),
-        path: `${basePath}/admin`,
-        sameSite: "lax",
-      },
+      secure: adminUiConfig.appBaseUrl.startsWith("https://"),
+      basePath,
     });
-    await fastify.register(require("./plugins/auth"), { tenantsByKeycloakSub });
+    await fastify.register(require("./plugins/auth"), { tenantsByKeycloakSub, basePath });
     await fastify.register(require("./plugins/staticAdmin"));
     await fastify.register(require("./routes/adminTemplates"));
     await fastify.register(require("./routes/adminAccountMap"));

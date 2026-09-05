@@ -5,7 +5,6 @@ const path = require("node:path");
 const os = require("node:os");
 const fastify = require("fastify");
 const fastifyCookie = require("@fastify/cookie");
-const fastifySession = require("@fastify/session");
 const fastifyCors = require("@fastify/cors");
 
 const { buildTenantLookup, resolveTenant } = require("../src/lib/tenantAuth");
@@ -13,6 +12,7 @@ const { createDedupCache } = require("../src/lib/dedupCache");
 const { loadTenants } = require("../src/lib/tenantRegistry");
 const { spawnAll } = require("../src/worker/tenantWorkerPool");
 const { createTenantProvisioner } = require("../src/lib/tenantProvisioning");
+const { deriveBasePath } = require("../src/lib/adminBasePath");
 
 const FAKE_WORKER_PATH = path.join(__dirname, "fixtures/fakeTenantWorker.js");
 
@@ -59,7 +59,7 @@ function fakeOidcClient({ sub = "sub-alice" } = {}) {
 // templates.json, and a fake oidcClient (same pattern as test/admin-auth.test.js). This is
 // the one test in the suite that exercises the real chain together end to end, rather than
 // each task's own hand-built minimal server -- see Finding 7 of the final review.
-async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
+async function buildApp({ oidcClient = fakeOidcClient(), appBaseUrl = APP_BASE_URL } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "admin-full-chain-"));
   const templatesPath = path.join(dir, "templates.json");
   fs.writeFileSync(templatesPath, "[]");
@@ -77,7 +77,7 @@ async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
     KEYCLOAK_CLIENT_ID: "actualtap-admin",
     KEYCLOAK_CLIENT_SECRET: "secret",
     SESSION_SECRET,
-    APP_BASE_URL,
+    APP_BASE_URL: appBaseUrl,
   });
 
   const addedTransactions = [];
@@ -120,14 +120,16 @@ async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
     request.tenant = tenant;
   });
 
-  // Admin UI stack, in the same order and with the same options as server.js (Findings 1-6).
+  // Admin UI stack, in the same order and with the same options as server.js (Findings 1-6),
+  // including the path-prefix-aware cookie path and auth basePath derived from APP_BASE_URL.
+  const basePath = deriveBasePath(appBaseUrl);
   await app.register(fastifyCookie);
-  await app.register(fastifySession, {
+  await app.register(require("../src/plugins/adminSession"), {
     secret: SESSION_SECRET,
-    saveUninitialized: false,
-    cookie: { secure: APP_BASE_URL.startsWith("https://"), path: "/admin", sameSite: "lax" },
+    secure: appBaseUrl.startsWith("https://"),
+    basePath,
   });
-  await app.register(require("../src/plugins/auth"), { oidcClient, tenantsByKeycloakSub });
+  await app.register(require("../src/plugins/auth"), { oidcClient, tenantsByKeycloakSub, basePath });
   await app.register(require("../src/plugins/staticAdmin"));
   await app.register(require("../src/routes/adminTemplates"));
 
@@ -181,10 +183,10 @@ async function buildFreshApp({ oidcClient = fakeOidcClient({ sub: "sub-new-user"
   });
 
   await app.register(fastifyCookie);
-  await app.register(fastifySession, {
+  await app.register(require("../src/plugins/adminSession"), {
     secret: SESSION_SECRET,
-    saveUninitialized: false,
-    cookie: { secure: APP_BASE_URL.startsWith("https://"), path: "/admin", sameSite: "lax" },
+    secure: APP_BASE_URL.startsWith("https://"),
+    basePath: deriveBasePath(APP_BASE_URL),
   });
   await app.register(require("../src/plugins/auth"), { oidcClient, tenantsByKeycloakSub });
   await app.register(require("../src/plugins/staticAdmin"));
@@ -301,6 +303,70 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /ba
     assert.ok(setCookieHeader, "expected /admin/login to set a session cookie");
     const setCookie = Array.isArray(setCookieHeader) ? setCookieHeader.join("; ") : setCookieHeader;
     assert.ok(/Path=\/admin/i.test(setCookie), `expected cookie to be scoped to /admin, got: ${setCookie}`);
+
+    await app.close();
+  });
+
+  // Spec §12: "An APP_BASE_URL with a path component produces a session cookie whose
+  // Set-Cookie Path attribute includes that prefix" -- and, per final-review Finding 1, the
+  // login redirect the browser is given must carry the prefix too.
+  it("an APP_BASE_URL with a path component prefixes both the cookie Path and the login redirect", async () => {
+    const PREFIX = "/actual-transfer-hub";
+    const { app } = await buildApp({ appBaseUrl: `http://cash.example.com${PREFIX}` });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    const setCookieHeader = loginResponse.headers["set-cookie"];
+    assert.ok(setCookieHeader, "expected /admin/login to set a session cookie");
+    const setCookie = Array.isArray(setCookieHeader) ? setCookieHeader.join("; ") : setCookieHeader;
+    assert.ok(
+      new RegExp(`Path=${PREFIX}/admin`, "i").test(setCookie),
+      `expected the cookie Path to include the deployment prefix, got: ${setCookie}`
+    );
+
+    const guardedResponse = await app.inject({ method: "GET", url: "/admin/" });
+    assert.strictEqual(guardedResponse.statusCode, 302);
+    assert.ok(
+      guardedResponse.headers.location.startsWith(`${PREFIX}/admin/login`),
+      `expected a prefixed login redirect, got: ${guardedResponse.headers.location}`
+    );
+
+    await app.close();
+  });
+
+  // The prefixed cookie Path is only half the story: the session itself must still work on the
+  // app-internal (prefix-stripped) URLs this process actually receives. Getting this wrong
+  // silently disables sessions and every login ends in a 400 "Invalid state".
+  it("a prefixed deployment still completes a full login round-trip on stripped internal URLs", async () => {
+    const PREFIX = "/actual-transfer-hub";
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const { app } = await buildApp({ oidcClient, appBaseUrl: `http://cash.example.com${PREFIX}` });
+
+    // The proxy strips the prefix, so every URL below is the unprefixed one the app sees.
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    assert.strictEqual(loginResponse.statusCode, 302);
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    assert.ok(cookie.length > 0, "expected a pre-auth session cookie");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    // A 400 here means the PKCE state never survived in a session (the failure mode when the
+    // session cookie path is scoped to the browser-facing prefix instead of the internal path).
+    assert.strictEqual(callbackResponse.statusCode, 302, `callback failed: ${callbackResponse.body}`);
+    assert.strictEqual(callbackResponse.headers.location, `${PREFIX}/admin/`);
+    const postAuthSetCookie = callbackResponse.headers["set-cookie"];
+    const postAuthCookieHeader = Array.isArray(postAuthSetCookie) ? postAuthSetCookie.join("; ") : postAuthSetCookie;
+    assert.ok(
+      new RegExp(`Path=${PREFIX}/admin`, "i").test(postAuthCookieHeader),
+      `post-login cookie must stay prefixed, got: ${postAuthCookieHeader}`
+    );
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const indexResponse = await app.inject({ method: "GET", url: "/admin/", headers: { cookie } });
+    assert.strictEqual(indexResponse.statusCode, 200);
 
     await app.close();
   });
