@@ -10,6 +10,7 @@ const schema = {
     ACTUAL_PASSWORD: { type: "string" },
     ACTUAL_SYNC_ID: { type: "string" },
     ACTUAL_ENCRYPTION_PASSWORD: { type: "string", default: "" },
+    ACCOUNT_MAP: { type: "string", default: "{}" },
   },
 };
 
