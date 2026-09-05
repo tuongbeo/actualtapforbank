@@ -3,15 +3,10 @@ const fp = require("fastify-plugin");
 
 const schema = {
   type: "object",
-  required: ["API_KEY", "ACTUAL_URL", "ACTUAL_PASSWORD", "ACTUAL_SYNC_ID"],
+  required: ["ACTUAL_URL"],
   properties: {
-    API_KEY: { type: "string" },
     ACTUAL_URL: { type: "string" },
-    ACTUAL_PASSWORD: { type: "string" },
-    ACTUAL_SYNC_ID: { type: "string" },
-    ACTUAL_ENCRYPTION_PASSWORD: { type: "string", default: "" },
-    ACCOUNT_MAP: { type: "string", default: "{}" },
-    TEMPLATES_CONFIG_PATH: { type: "string", default: "config/templates.json" },
+    TENANTS_CONFIG_PATH: { type: "string", default: "config/tenants.json" },
   },
 };
 
@@ -26,11 +21,5 @@ module.exports = fp(async (fastify, opts) => {
   } catch (error) {
     fastify.log.error(`Failed to register environment variables: ${error.message}`);
     throw error;
-  }
-
-  try {
-    JSON.parse(fastify.config.ACCOUNT_MAP);
-  } catch (error) {
-    throw new Error("ACCOUNT_MAP is not valid JSON. Check the environment variable for syntax errors.");
   }
 });
