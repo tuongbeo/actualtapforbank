@@ -24,6 +24,7 @@ process.once("message", async (config) => {
     getAccounts: () => actual.getAccounts(),
     getPayees: () => actual.getPayees(),
     addTransactions: (accountId, transactions) => actual.addTransactions(accountId, transactions),
+    deleteTransaction: (id) => actual.deleteTransaction(id),
     sync: () => actual.sync(),
     actualInternalSend: (method, params) => actualInternal.send(method, params),
   };

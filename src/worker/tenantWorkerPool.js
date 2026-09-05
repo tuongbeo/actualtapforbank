@@ -27,6 +27,7 @@ const createWorkerClient = (child) => {
     getAccounts: () => call("getAccounts", []),
     getPayees: () => call("getPayees", []),
     addTransactions: (accountId, transactions) => call("addTransactions", [accountId, transactions]),
+    deleteTransaction: (id) => call("deleteTransaction", [id]),
     sync: () => call("sync", []),
     actualInternalSend: (method, params) => call("actualInternalSend", [method, params]),
   };

@@ -2,6 +2,7 @@ const METHODS = {
   getAccounts: (client) => client.getAccounts(),
   getPayees: (client) => client.getPayees(),
   addTransactions: (client, args) => client.addTransactions(...args),
+  deleteTransaction: (client, args) => client.deleteTransaction(...args),
   sync: (client) => client.sync(),
   actualInternalSend: (client, args) => client.actualInternalSend(...args),
 };
