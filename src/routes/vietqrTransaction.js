@@ -1,5 +1,5 @@
 const { randomUUID, createHash } = require("crypto");
-const { normalize, identify } = require("../adapters");
+const { normalize, identify, extract, AmbiguousMatchError } = require("../templates");
 const { resolveAccountName } = require("../lib/accountResolver");
 const { createDedupCache } = require("../lib/dedupCache");
 const { getAccountByName } = require("../lib/actualAccounts");
@@ -18,35 +18,52 @@ const vietqrTransactionSchema = {
   },
 };
 
-const buildDedupKey = (adapterName, parsed, normalizedText) => {
+const buildDedupKey = (templateName, parsed, normalizedText) => {
   if (parsed.referenceCode) {
-    return `${adapterName}:ref:${parsed.referenceCode}`;
+    return `${templateName}:ref:${parsed.referenceCode}`;
   }
   const hash = createHash("sha256").update(normalizedText).digest("hex");
-  return `${adapterName}:hash:${hash}`;
+  return `${templateName}:hash:${hash}`;
 };
 
 module.exports = async (fastify, opts) => {
   const dedupCache = opts.dedupCache || createDedupCache();
+  const templates = opts.templates || [];
 
   fastify.post("/vietqr-transaction", vietqrTransactionSchema, async (request, reply) => {
     const normalizedText = normalize(request.body.rawText);
 
-    const adapter = identify(normalizedText);
-    if (!adapter) {
+    let template;
+    try {
+      template = identify(normalizedText, templates);
+    } catch (err) {
+      if (err instanceof AmbiguousMatchError) {
+        return reply.code(500).send({ error: "Ambiguous template match", message: err.message });
+      }
+      throw err;
+    }
+
+    if (!template) {
       return reply.code(400).send({
         error: "Unrecognized bank format",
-        message: "No adapter matched the provided rawText",
+        message: "No template matched the provided rawText",
       });
     }
 
     let parsed;
     try {
-      parsed = adapter.parse(normalizedText);
+      parsed = extract(normalizedText, template);
     } catch (err) {
       return reply.code(422).send({
         error: "Failed to parse transaction",
         message: err.message,
+      });
+    }
+
+    if (typeof parsed.amount !== "number" || !Number.isFinite(parsed.amount)) {
+      return reply.code(422).send({
+        error: "Failed to parse transaction",
+        message: `Could not parse a numeric amount (got "${parsed.amount}")`,
       });
     }
 
@@ -66,7 +83,7 @@ module.exports = async (fastify, opts) => {
       });
     }
 
-    const dedupKey = buildDedupKey(adapter.name, parsed, normalizedText);
+    const dedupKey = buildDedupKey(template.name, parsed, normalizedText);
     if (dedupCache.checkAndMark(dedupKey)) {
       return reply.send({ duplicate: true, ...parsed });
     }
@@ -78,6 +95,7 @@ module.exports = async (fastify, opts) => {
       amount: signedAmount * 100,
       notes: parsed.description,
       date: parsed.transactionDate,
+      imported_id: parsed.referenceCode,
       cleared: false,
     };
 

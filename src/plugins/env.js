@@ -11,6 +11,7 @@ const schema = {
     ACTUAL_SYNC_ID: { type: "string" },
     ACTUAL_ENCRYPTION_PASSWORD: { type: "string", default: "" },
     ACCOUNT_MAP: { type: "string", default: "{}" },
+    TEMPLATES_CONFIG_PATH: { type: "string", default: "config/templates.json" },
   },
 };
 

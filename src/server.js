@@ -42,9 +42,20 @@ async function registerModules() {
   await fastify.register(require("@fastify/cors"), {
     methods: ["POST"],
   });
+  // Load and validate templates before the (slow) Actual connection so a bad
+  // config/templates.json fails fast instead of after the connector timeout.
+  const { loadTemplates } = require("./templates");
+  const templatesConfigPath = fastify.config.TEMPLATES_CONFIG_PATH;
+  const templates = loadTemplates(templatesConfigPath);
+  fastify.log.info(`Loaded ${templates.length} notification template(s) from ${templatesConfigPath}`);
+  if (templates.length === 0) {
+    fastify.log.warn(`No notification templates loaded from ${templatesConfigPath} - /vietqr-transaction will reject all requests`);
+  }
+
   await fastify.register(require("./plugins/actualConnector"));
   await fastify.register(require("./routes/transaction"));
-  await fastify.register(require("./routes/vietqrTransaction"));
+  await fastify.register(require("./routes/vietqrTransaction"), { templates });
+
   await fastify.register(require("./routes/health"));
 }
 

@@ -6,11 +6,13 @@ const fastify = require("fastify");
 const { createDedupCache } = require("../src/lib/dedupCache");
 
 const FIXTURE = fs.readFileSync(path.join(__dirname, "fixtures/bidv-expense.txt"), "utf8");
+const TEMPLATES = JSON.parse(fs.readFileSync(path.join(__dirname, "../config/templates.json"), "utf8"));
 
 async function buildMockServer({
   accountMap = '{"8820966012":"BIDV Cash"}',
   accounts = [{ id: "acc-1", name: "BIDV Cash" }],
   syncBehaviour = "success",
+  templates = TEMPLATES,
 } = {}) {
   const app = fastify({ logger: false, ajv: { customOptions: { allowUnionTypes: true } } });
 
@@ -39,7 +41,7 @@ async function buildMockServer({
   });
   app.decorate("addedTransactions", addedTransactions);
 
-  await app.register(require("../src/routes/vietqrTransaction"), { dedupCache: createDedupCache() });
+  await app.register(require("../src/routes/vietqrTransaction"), { dedupCache: createDedupCache(), templates });
 
   return app;
 }
@@ -59,13 +61,14 @@ describe("POST /vietqr-transaction", () => {
     assert.strictEqual(body.amount, -1000000);
     assert.strictEqual(body.payee_name, "PHAM MANH TUONG");
     assert.strictEqual(body.date, "2026-09-04");
+    assert.strictEqual(body.imported_id, "6247BIDVE2NEKZD1");
     assert.ok(body.notes.includes("6247BIDVE2NEKZD1"));
     assert.strictEqual(app.addedTransactions.length, 1);
     assert.strictEqual(app.addedTransactions[0].accountId, "acc-1");
     await app.close();
   });
 
-  it("returns 400 when no adapter matches", async () => {
+  it("returns 400 when no template matches", async () => {
     const app = await buildMockServer();
     const response = await app.inject({
       method: "POST",
@@ -79,7 +82,7 @@ describe("POST /vietqr-transaction", () => {
     await app.close();
   });
 
-  it("returns 422 for a BIDV email missing Tài khoản nguồn (unsupported income format)", async () => {
+  it("returns 400 for a BIDV email lacking the debit-account label (e.g. an income variant)", async () => {
     const app = await buildMockServer();
     const incomeText = FIXTURE.replace("Tài khoản nguồn:", "Tài khoản đích:");
     const response = await app.inject({
@@ -89,8 +92,40 @@ describe("POST /vietqr-transaction", () => {
       payload: { rawText: incomeText },
     });
 
-    assert.strictEqual(response.statusCode, 422);
-    assert.strictEqual(JSON.parse(response.body).error, "Failed to parse transaction");
+    assert.strictEqual(response.statusCode, 400);
+    assert.strictEqual(JSON.parse(response.body).error, "Unrecognized bank format");
+    await app.close();
+  });
+
+  it("returns 500 when more than one template matches the same rawText", async () => {
+    const duplicateTemplates = [
+      {
+        name: "dup-a",
+        sourceType: "email",
+        direction: "expense",
+        match: { contains: ["FOO"] },
+        fields: { x: { label: "FOO:", stopLabel: "$END$" } },
+        requiredFields: ["x"],
+      },
+      {
+        name: "dup-b",
+        sourceType: "email",
+        direction: "expense",
+        match: { contains: ["FOO"] },
+        fields: { x: { label: "FOO:", stopLabel: "$END$" } },
+        requiredFields: ["x"],
+      },
+    ];
+    const app = await buildMockServer({ templates: duplicateTemplates });
+    const response = await app.inject({
+      method: "POST",
+      url: "/vietqr-transaction",
+      headers: { "x-api-key": "test-key", "content-type": "application/json" },
+      payload: { rawText: "FOO: bar" },
+    });
+
+    assert.strictEqual(response.statusCode, 500);
+    assert.strictEqual(JSON.parse(response.body).error, "Ambiguous template match");
     await app.close();
   });
 
@@ -145,7 +180,7 @@ describe("POST /vietqr-transaction", () => {
   });
 
   it("does not poison the dedup cache when the account is not found in Actual", async () => {
-    const app = await buildMockServer({ accounts: [] }); // no accounts, so getAccountByName never finds "BIDV Cash"
+    const app = await buildMockServer({ accounts: [] });
     const first = await app.inject({
       method: "POST",
       url: "/vietqr-transaction",
@@ -181,7 +216,6 @@ describe("POST /vietqr-transaction", () => {
     assert.strictEqual(first.statusCode, 500);
     assert.strictEqual(app.addedTransactions.length, 0);
 
-    // Fix the mock so the retry can succeed, then confirm the retry is NOT treated as a duplicate
     app.actual.addTransactions = async (accountId, transactions) => {
       app.addedTransactions.push({ accountId, transactions });
       return "ok";

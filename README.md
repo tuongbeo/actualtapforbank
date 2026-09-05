@@ -101,9 +101,68 @@ curl -X POST https://actualtap.yourdomain.com/transaction \
 }
 ```
 
-Currently supported: BIDV, expense (outgoing transfer) direction only.
+Shipped out of the box: BIDV, expense (outgoing transfer) direction only. Additional banks and formats are added by editing the template config — no code changes required.
 
 The source Actual account is resolved via the `ACCOUNT_MAP` environment variable (see Environment Variables below), keyed by the bank account number found in the notification text — not by name in the request body.
+
+#### Template Configuration
+
+Bank-notification parsing is driven entirely by `config/templates.json` (override the path with the `TEMPLATES_CONFIG_PATH` environment variable). The file is read and validated **once at startup** — edit it and restart the container for changes to take effect. An invalid file stops the server at boot; a missing file leaves zero templates loaded, and every `/vietqr-transaction` request then returns `400 Unrecognized bank format`.
+
+The file is a JSON array of template objects:
+
+```json
+[
+  {
+    "name": "bidv-expense",
+    "sourceType": "email",
+    "direction": "expense",
+    "match": { "contains": ["BIDV", "Số tham chiếu"] },
+    "fields": {
+      "referenceCode": { "label": ["Số tham chiếu:", "Reference number:"], "stopLabel": "Tài khoản nguồn:" },
+      "amount": { "label": "Số tiền giao dịch:", "type": "amount", "stopLabel": "Phí giao dịch:" },
+      "transactionDate": { "label": "Thời gian giao dịch:", "type": "date", "format": "DD/MM/YYYY HH:mm:ss", "stopLabel": "Số tham chiếu:" }
+    },
+    "requiredFields": ["referenceCode", "amount", "transactionDate"],
+    "descriptionSuffix": "Ref: {referenceCode}"
+  }
+]
+```
+
+| Key                 | Description                                                                                                                                                    |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`              | Unique template identifier, used in logs and for deduplication keys                                                                                            |
+| `sourceType`        | `"email"` or `"push"` — describes where the raw text comes from                                                                                                |
+| `direction`         | `"expense"` or `"income"` — decides the sign of the transaction amount                                                                                         |
+| `match.contains`    | Array of substrings; **all** must be present in the notification text (case-insensitive) for the template to match. If two templates match, the request fails with `500 Ambiguous template match` |
+| `fields`            | Map of field name → extraction rule (see below)                                                                                                                |
+| `requiredFields`    | Array of field names that must extract successfully; a miss returns `422 Failed to parse transaction`. Fields not listed here are simply omitted when missing   |
+| `descriptionSuffix` | _(optional)_ Text appended to `description` (separated by ` · `), with `{fieldName}` placeholders substituted from the parsed fields                            |
+
+Each entry in `fields` is either **label-based** or **regex-based**:
+
+| Key         | Description                                                                                                                                                                |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `label`     | A string, or an array of consecutive labels (e.g. a Vietnamese line followed by its English line). The value is whatever follows the label(s)                               |
+| `stopLabel` | **Mandatory** for label-based fields — the text that terminates the value. There is deliberately no end-of-string fallback: if the `stopLabel` is not present in a given message the field fails to extract rather than silently swallowing the rest of the text |
+| `regex`     | Alternative to `label`/`stopLabel`: a regular expression with a named capture group `value`, e.g. `"Amount:\\s*(?<value>[\\d,.]+)"`                                          |
+| `type`      | _(optional)_ `"amount"` parses the value into a number (strips thousands separators and currency text); `"date"` parses it into `YYYY-MM-DD`                                |
+| `format`    | Required with `"type": "date"` — the input date layout, using the tokens `YYYY`, `MM`, `DD`, `HH`, `mm`, `ss` (e.g. `DD/MM/YYYY HH:mm:ss`)                                  |
+
+##### Reserved field names
+
+Most field names are free-form, but these are consumed by `/vietqr-transaction` when building the Actual transaction:
+
+| Field                 | Used for                                                                                        |
+| --------------------- | ------------------------------------------------------------------------------------------------- |
+| `sourceAccountNumber` | Resolved against `ACCOUNT_MAP` to pick the Actual account. Not stored on the transaction itself   |
+| `amount`              | The transaction amount; must parse to a finite number (use `"type": "amount"`), else `422`       |
+| `transactionDate`     | The transaction date; must produce `YYYY-MM-DD` (use `"type": "date"` with a `format`)           |
+| `counterpartyName`    | Payee name                                                                                       |
+| `description`         | Transaction notes (with `descriptionSuffix` appended, when configured)                           |
+| `referenceCode`       | Written as `imported_id` and used as the deduplication key (falls back to a hash of the raw text) |
+
+The transaction's direction always comes from the template's own `direction` key — a field named `direction` in `fields` is ignored for this purpose.
 
 ## Setup and Installation
 
@@ -154,6 +213,7 @@ services:
 | `ACTUAL_SYNC_ID`             | 8B51B58D-3A0D-4B5B-A41F-DE574306A4F2 | The Unique ID of your Budget                                                                         |
 | `ACTUAL_ENCRYPTION_PASSWORD` | encryptedSecretPassword              | Your Encrypted Password _(optional, N/A if not using End-to-end encryption)_                         |
 | `ACCOUNT_MAP`                | `{"8820966012":"BIDV Cash"}`         | _(optional)_ JSON map of bank account number → Actual account name, used by `/vietqr-transaction` to route imported transactions. Defaults to `{}` (no accounts mapped). |
+| `TEMPLATES_CONFIG_PATH`      | `config/templates.json`              | _(optional)_ Path to the bank-notification template config used by `/vietqr-transaction` (see [Template Configuration](#template-configuration)). Relative paths resolve from the app root. Defaults to `config/templates.json`. |
 
 ### Local Development
 

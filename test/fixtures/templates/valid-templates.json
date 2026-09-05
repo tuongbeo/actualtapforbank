@@ -1,0 +1,12 @@
+[
+  {
+    "name": "test-valid",
+    "sourceType": "email",
+    "direction": "expense",
+    "match": { "contains": ["Foo"] },
+    "fields": {
+      "code": { "label": "Code:", "stopLabel": "$END$" }
+    },
+    "requiredFields": ["code"]
+  }
+]

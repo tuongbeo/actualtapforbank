@@ -15,6 +15,7 @@ WORKDIR /app
 # Copy only what we need from builder
 COPY --from=builder /app/node_modules ./node_modules
 COPY ./src ./src
+COPY ./config ./config
 COPY package.json ./
 
 # Remove npm and its vulnerable dependencies (glob, tar)
