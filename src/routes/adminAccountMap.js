@@ -12,17 +12,6 @@ module.exports = async (fastify, opts) => {
       return reply.code(401).send({ error: "Unauthorized" });
     }
 
-    // Validate shape: all keys and values must be strings
-    if (typeof request.body !== "object" || request.body === null || Array.isArray(request.body)) {
-      return reply.code(400).send({ error: "Invalid account map", message: "Account map must be an object" });
-    }
-
-    for (const [key, value] of Object.entries(request.body)) {
-      if (typeof key !== "string" || typeof value !== "string") {
-        return reply.code(400).send({ error: "Invalid account map", message: "All keys and values must be strings" });
-      }
-    }
-
     try {
       request.tenant.accountMapStore.replaceAll(request.body);
     } catch (err) {

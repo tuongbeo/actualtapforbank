@@ -9,6 +9,15 @@ function fakeAccountMapStore(initial) {
   return {
     getMapJson: () => mapJson,
     replaceAll: (next) => {
+      // Validate like the real accountMapStore
+      if (next === null || typeof next !== "object" || Array.isArray(next)) {
+        throw new Error("Account map must be a JSON object");
+      }
+      for (const [key, value] of Object.entries(next)) {
+        if (typeof value !== "string" || value.length === 0) {
+          throw new Error(`Account map entry "${key}" must map to a non-empty string`);
+        }
+      }
       mapJson = JSON.stringify(next);
     },
   };
