@@ -36,11 +36,11 @@ module.exports = fp(async (fastify, opts) => {
   const { tenantsByKeycloakSub } = opts;
 
   fastify.addHook("preHandler", async (request, reply) => {
-    if (request.method !== "GET") return;
     if (!request.url.startsWith("/admin")) return;
     if (request.url.startsWith("/admin/login") || request.url.startsWith("/admin/callback")) return;
 
     if (!request.session.userSub) {
+      if (request.method !== "GET") return; // only redirect GET requests to login, per spec
       const returnTo = encodeURIComponent(request.url);
       reply.redirect(`/admin/login?returnTo=${returnTo}`);
       return;

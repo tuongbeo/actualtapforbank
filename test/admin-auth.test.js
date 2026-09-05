@@ -39,6 +39,7 @@ async function buildApp({ oidcClient = fakeOidcClient(), tenantsByKeycloakSub = 
   await app.register(fastifySession, { secret: SESSION_SECRET, cookie: { secure: false } });
   await app.register(authPlugin, { oidcClient, tenantsByKeycloakSub });
   app.get("/admin/", async () => ({ ok: true, tenant: true }));
+  app.post("/admin/test-post", async (request) => ({ tenant: !!request.tenant }));
   return app;
 }
 
@@ -165,6 +166,35 @@ describe("admin guard preHandler", () => {
 
     const response = await app.inject({ method: "GET", url: "/admin/", headers: { cookie } });
     assert.strictEqual(response.statusCode, 403);
+    await app.close();
+  });
+
+  it("sets request.tenant for an authenticated non-GET request (e.g. POST)", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const tenantsByKeycloakSub = new Map([["sub-alice", { id: "alice", templatesStore: {} }]]);
+    const app = await buildApp({ oidcClient, tenantsByKeycloakSub });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const response = await app.inject({ method: "POST", url: "/admin/test-post", headers: { cookie } });
+    assert.strictEqual(response.statusCode, 200);
+    assert.deepStrictEqual(JSON.parse(response.body), { tenant: true });
+    await app.close();
+  });
+
+  it("does not redirect an unauthenticated non-GET request to /admin/login", async () => {
+    const app = await buildApp();
+    const response = await app.inject({ method: "POST", url: "/admin/test-post" });
+    assert.notStrictEqual(response.statusCode, 302);
     await app.close();
   });
 });
