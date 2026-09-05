@@ -43,7 +43,7 @@ const parse = (normalizedText) => {
 
   const counterpartyName = extract(
     normalizedText,
-    /Tên người thụ hưởng:\s*(?:Beneficiary name:\s*)?([A-Z][A-Z\s]*?)\s*(?=Số tài khoản)/,
+    /Tên người thụ hưởng:\s*(?:Beneficiary name:\s*)?(.+?)\s*(?=Số tài khoản)/,
     "counterpartyName"
   )[1].trim();
 

@@ -26,4 +26,11 @@ describe("createDedupCache", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.strictEqual(cache.checkAndMark("key-1"), false);
   });
+
+  it("unmark clears a key so the next check is not a duplicate", () => {
+    const cache = createDedupCache();
+    cache.checkAndMark("key-1");
+    cache.unmark("key-1");
+    assert.strictEqual(cache.checkAndMark("key-1"), false);
+  });
 });

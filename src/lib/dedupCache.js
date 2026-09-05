@@ -15,6 +15,9 @@ const createDedupCache = (ttlMs = DEFAULT_TTL_MS) => {
       expiryByKey.set(key, now + ttlMs);
       return false;
     },
+    unmark(key) {
+      expiryByKey.delete(key);
+    },
   };
 };
 

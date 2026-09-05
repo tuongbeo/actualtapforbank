@@ -88,6 +88,23 @@ curl -X POST https://actualtap.yourdomain.com/transaction \
   }'
 ```
 
+### VietQR / Bank-email Transaction Import
+
+`POST /vietqr-transaction` accepts raw bank-notification text (e.g. the plain-text body of a bank email) and automatically detects the source bank, parses the transaction, and creates it in Actual Budget — no need to structure the request yourself.
+
+#### Request Body
+
+```json
+{
+  "rawText": "...", // Required: raw transaction notification text (e.g. bank email body)
+  "capturedAt": "2026-09-04T08:41:29Z" // Optional: ISO 8601 timestamp of when the client captured this text
+}
+```
+
+Currently supported: BIDV, expense (outgoing transfer) direction only.
+
+The source Actual account is resolved via the `ACCOUNT_MAP` environment variable (see Environment Variables below), keyed by the bank account number found in the notification text — not by name in the request body.
+
 ## Setup and Installation
 
 **Note:** `ACTUAL_ENCRYPTION_PASSWORD` is optional, it's only required if End-to-end encryption is Enabled on Actual Server and a password has been set.
@@ -136,6 +153,7 @@ services:
 | `ACTUAL_PASSWORD`            | superSecretPassword                  | Password for your Actual Budget Server                                                               |
 | `ACTUAL_SYNC_ID`             | 8B51B58D-3A0D-4B5B-A41F-DE574306A4F2 | The Unique ID of your Budget                                                                         |
 | `ACTUAL_ENCRYPTION_PASSWORD` | encryptedSecretPassword              | Your Encrypted Password _(optional, N/A if not using End-to-end encryption)_                         |
+| `ACCOUNT_MAP`                | `{"8820966012":"BIDV Cash"}`         | _(optional)_ JSON map of bank account number → Actual account name, used by `/vietqr-transaction` to route imported transactions. Defaults to `{}` (no accounts mapped). |
 
 ### Local Development
 

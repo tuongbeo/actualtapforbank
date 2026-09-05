@@ -3,7 +3,7 @@ const resolveAccountName = (sourceAccountNumber, accountMapJson) => {
   try {
     accountMap = JSON.parse(accountMapJson || "{}");
   } catch (err) {
-    throw new Error(`ACCOUNT_MAP is not valid JSON: ${err.message}`);
+    throw new Error("ACCOUNT_MAP is not valid JSON");
   }
 
   return accountMap[sourceAccountNumber] || null;

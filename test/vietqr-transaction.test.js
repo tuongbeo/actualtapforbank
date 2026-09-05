@@ -143,4 +143,59 @@ describe("POST /vietqr-transaction", () => {
     assert.strictEqual(JSON.parse(response.body).error, "Sync failed");
     await app.close();
   });
+
+  it("does not poison the dedup cache when the account is not found in Actual", async () => {
+    const app = await buildMockServer({ accounts: [] }); // no accounts, so getAccountByName never finds "BIDV Cash"
+    const first = await app.inject({
+      method: "POST",
+      url: "/vietqr-transaction",
+      headers: { "x-api-key": "test-key", "content-type": "application/json" },
+      payload: { rawText: FIXTURE },
+    });
+    assert.strictEqual(first.statusCode, 400);
+    assert.strictEqual(JSON.parse(first.body).error, "Invalid account");
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/vietqr-transaction",
+      headers: { "x-api-key": "test-key", "content-type": "application/json" },
+      payload: { rawText: FIXTURE },
+    });
+    assert.strictEqual(second.statusCode, 400);
+    assert.strictEqual(JSON.parse(second.body).error, "Invalid account");
+    await app.close();
+  });
+
+  it("does not poison the dedup cache when addTransaction fails", async () => {
+    const app = await buildMockServer();
+    app.actual.addTransactions = async () => {
+      throw new Error("Actual is down");
+    };
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/vietqr-transaction",
+      headers: { "x-api-key": "test-key", "content-type": "application/json" },
+      payload: { rawText: FIXTURE },
+    });
+    assert.strictEqual(first.statusCode, 500);
+    assert.strictEqual(app.addedTransactions.length, 0);
+
+    // Fix the mock so the retry can succeed, then confirm the retry is NOT treated as a duplicate
+    app.actual.addTransactions = async (accountId, transactions) => {
+      app.addedTransactions.push({ accountId, transactions });
+      return "ok";
+    };
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/vietqr-transaction",
+      headers: { "x-api-key": "test-key", "content-type": "application/json" },
+      payload: { rawText: FIXTURE },
+    });
+    assert.strictEqual(second.statusCode, 200);
+    assert.strictEqual(JSON.parse(second.body).duplicate, undefined);
+    assert.strictEqual(app.addedTransactions.length, 1);
+    await app.close();
+  });
 });

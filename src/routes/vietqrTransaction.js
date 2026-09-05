@@ -58,17 +58,17 @@ module.exports = async (fastify, opts) => {
       });
     }
 
-    const dedupKey = buildDedupKey(adapter.name, parsed, normalizedText);
-    if (dedupCache.checkAndMark(dedupKey)) {
-      return reply.send({ duplicate: true, ...parsed });
-    }
-
     const { accountId, accounts } = await getAccountByName(fastify, accountName);
     if (!accountId) {
       return reply.code(400).send({
         error: "Invalid account",
         message: `Account "${accountName}" not found in Actual. Available accounts: ${accounts.map((a) => a.name).join(", ")}`,
       });
+    }
+
+    const dedupKey = buildDedupKey(adapter.name, parsed, normalizedText);
+    if (dedupCache.checkAndMark(dedupKey)) {
+      return reply.send({ duplicate: true, ...parsed });
     }
 
     const signedAmount = parsed.direction === "expense" ? -Math.abs(parsed.amount) : Math.abs(parsed.amount);
@@ -81,7 +81,12 @@ module.exports = async (fastify, opts) => {
       cleared: false,
     };
 
-    await addTransaction(fastify, accountId, transaction);
+    try {
+      await addTransaction(fastify, accountId, transaction);
+    } catch (err) {
+      dedupCache.unmark(dedupKey);
+      throw err;
+    }
 
     const syncResult = await syncBudget(fastify);
     if (!syncResult.ok) {

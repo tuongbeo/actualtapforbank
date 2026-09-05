@@ -45,5 +45,17 @@ describe("BIDV adapter", () => {
       const text = FIXTURE.replace("Tài khoản nguồn:", "Tài khoản đích:");
       assert.throws(() => bidv.parse(text), /not supported yet/);
     });
+
+    it("parses a company beneficiary name containing digits", () => {
+      // FIXTURE is already normalized (newlines collapsed to single spaces), so the
+      // replace target must match the normalized form, not the raw fixture's newlines.
+      const text = FIXTURE.replace(
+        "PHAM MANH TUONG Số tài khoản/Số thẻ thụ hưởng:",
+        "CTY TNHH 3M VIET NAM Số tài khoản/Số thẻ thụ hưởng:"
+      );
+      assert.notStrictEqual(text, FIXTURE, "replace() did not match the fixture text as expected");
+      const result = bidv.parse(normalize(text));
+      assert.strictEqual(result.counterpartyName, "CTY TNHH 3M VIET NAM");
+    });
   });
 });
