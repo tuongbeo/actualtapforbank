@@ -234,6 +234,16 @@ To add more tenants to an existing deployment:
 3. Optionally create `config/tenants/<new-id>/account-map.json` and/or `config/tenants/<new-id>/templates.json` if needed
 4. Restart the application to load the new tenant
 
+## Admin UI (Template Editor)
+
+Setting all 5 of `KEYCLOAK_ISSUER_URL`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `SESSION_SECRET`, `APP_BASE_URL` enables a browser-based admin page at `/admin/`, gated behind Keycloak login, for creating/editing/deleting/previewing a tenant's `/vietqr-transaction` templates without hand-editing `templates.json` or restarting the container. Leaving all 5 unset disables the feature entirely (`/admin/*` returns 404); setting only some of them is treated as a misconfiguration and the server refuses to start, naming which ones are missing.
+
+**Mapping a Keycloak user to a tenant:** add `"keycloakSub": "<the user's Keycloak subject id>"` to that tenant's entry in `config/tenants.json`. A user who logs in successfully but has no `keycloakSub` mapped to any tenant sees a `403` explaining exactly what to add and where.
+
+**Registering the Keycloak client:** create an OIDC client in your Keycloak realm with the Authorization Code flow and PKCE enabled, and register `${APP_BASE_URL}/admin/callback` as a valid redirect URI.
+
+Changes made through the admin UI take effect on the very next `/vietqr-transaction` request — no restart required (this is the one exception to the rest of this app's "edit the file and restart" model).
+
 ## Setup and Installation
 
 **Note:** Actual Tap requires a `config/tenants.json` file to run. See [Multi-Tenant Configuration](#multi-tenant-configuration) for setup details.
@@ -278,6 +288,11 @@ Note: Update `./config` to point to your local config directory containing `tena
 | `TZ`                         | Australia/Melbourne                  | Your timezone, ideally you should match the TZ set in Actual                                         |
 | `ACTUAL_URL`                 | https://actual.yourdomain.com        | URL to Actual Budget Server                                                                          |
 | `TENANTS_CONFIG_PATH`        | `config/tenants.json`                | _(optional)_ Path to the tenant registry (see Multi-Tenant Configuration below). Defaults to `config/tenants.json`. |
+| `KEYCLOAK_ISSUER_URL`        | https://keycloak.yourdomain.com/realms/actual | _(optional)_ Enables the admin UI when set together with the other 4 admin vars below. The Keycloak realm issuer URL (same realm Actual Budget's own server uses). |
+| `KEYCLOAK_CLIENT_ID`         | actualtap-admin                      | _(optional)_ The OIDC client ID registered in that Keycloak realm for this app. |
+| `KEYCLOAK_CLIENT_SECRET`     | (secret)                             | _(optional)_ The OIDC client secret for that client. |
+| `SESSION_SECRET`             | (32+ random characters)              | _(optional)_ Signs the admin session cookie. Required to be at least 32 characters when the admin UI is enabled. |
+| `APP_BASE_URL`               | https://actualtap.yourdomain.com     | _(optional)_ This deployment's externally-reachable base URL, used to build the OIDC redirect URI (`${APP_BASE_URL}/admin/callback`) — register this exact URL in the Keycloak client. |
 
 ### Local Development
 
