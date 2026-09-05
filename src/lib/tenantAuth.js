@@ -1,18 +1,29 @@
+const { createTemplatesStore } = require("../templates/store");
+
 const buildTenantLookup = (tenants, workerClients) => {
   const tenantsById = new Map();
+  const tenantsByKeycloakSub = new Map();
+
   for (const t of tenants) {
-    tenantsById.set(t.id, {
+    const tenant = {
       id: t.id,
       workerClient: workerClients.get(t.id),
-      templates: t.templates,
+      templatesStore: createTemplatesStore(t.templatesPath, t.templates),
       accountMapJson: t.accountMapJson,
       keycloakSub: t.keycloakSub,
-    });
+    };
+    tenantsById.set(t.id, tenant);
+    if (typeof t.keycloakSub === "string" && t.keycloakSub.length > 0) {
+      tenantsByKeycloakSub.set(t.keycloakSub, tenant);
+    }
   }
+
   const tenantsByApiKey = new Map(tenants.map((t) => [t.apiKey, tenantsById.get(t.id)]));
-  return { tenantsById, tenantsByApiKey };
+  return { tenantsById, tenantsByApiKey, tenantsByKeycloakSub };
 };
 
 const resolveTenant = (tenantsByApiKey, apiKey) => tenantsByApiKey.get(apiKey) || null;
 
-module.exports = { buildTenantLookup, resolveTenant };
+const resolveTenantByKeycloakSub = (tenantsByKeycloakSub, sub) => tenantsByKeycloakSub.get(sub) || null;
+
+module.exports = { buildTenantLookup, resolveTenant, resolveTenantByKeycloakSub };
