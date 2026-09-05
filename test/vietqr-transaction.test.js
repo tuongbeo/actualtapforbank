@@ -43,7 +43,12 @@ async function buildMockServer({
       reply.code(401).send({ error: "Unauthorized" });
       return;
     }
-    request.tenant = { id: tenantId, workerClient: mockWorkerClient, templates, accountMapJson };
+    request.tenant = {
+      id: tenantId,
+      workerClient: mockWorkerClient,
+      templatesStore: { getTemplates: () => templates },
+      accountMapJson,
+    };
   });
 
   await app.register(require("../src/routes/vietqrTransaction"), { dedupCache });

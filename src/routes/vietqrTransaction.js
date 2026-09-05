@@ -31,7 +31,7 @@ module.exports = async (fastify, opts) => {
 
   fastify.post("/vietqr-transaction", vietqrTransactionSchema, async (request, reply) => {
     const normalizedText = normalize(request.body.rawText);
-    const templates = request.tenant.templates;
+    const templates = request.tenant.templatesStore.getTemplates();
 
     let template;
     try {
