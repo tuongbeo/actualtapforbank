@@ -1,0 +1,51 @@
+Thông báo giao dịch thành công!
+Notice of successful transaction
+Kính gửi quý khách: PHAM MANH TUONG
+Dear Valued Customer: PHAM MANH TUONG
+BIDV xin trân trọng cảm ơn Quý khách đã tin tưởng lựa chọn và sử dụng dịch vụ SmartBanking
+BIDV thanks you for your trust and using SmartBanking service
+BIDV xin thông báo giao dịch của Quý khách đã thực hiện cụ thể như sau:
+BIDV is pleased to announce your transaction in details as below:
+Loại giao dịch:
+Transaction type:
+Chuyển tiền ngoài BIDV
+Interbank transfer
+Thời gian giao dịch:
+Transaction time:
+04/09/2026 08:41:29
+Số tham chiếu:
+Reference number:
+6247BIDVE2NEKZD1
+Tài khoản nguồn:
+Debit account:
+8820966012
+Số tiền giao dịch:
+Transaction amount:
+10,000 VND
+Phí giao dịch:
+Transaction fee:
+Miễn phí
+Tên người thụ hưởng:
+Beneficiary name:
+PHAM MANH TUONG
+Số tài khoản/Số thẻ thụ hưởng:
+Beneficiary account/ Card number:
+5342999999
+Tên ngân hàng thụ hưởng:
+Beneficiary bank:
+NHTMCP Kỹ Thương Việt Nam (TCB)
+Số tiền ghi có:
+Credit amount:
+10,000 VND
+Nội dung giao dịch:
+Transaction remark:
+PHAM MANH TUONG Chuyen tien
+Kênh thực hiện giao dịch:
+Channel:
+MB
+Hệ điều hành:
+Operating System:
+IOS
+IP: 58.187.177.35
+Trân trọng!
+Regards!

@@ -10,6 +10,7 @@ const schema = {
     ACTUAL_PASSWORD: { type: "string" },
     ACTUAL_SYNC_ID: { type: "string" },
     ACTUAL_ENCRYPTION_PASSWORD: { type: "string", default: "" },
+    ACCOUNT_MAP: { type: "string", default: "{}" },
   },
 };
 
@@ -24,5 +25,11 @@ module.exports = fp(async (fastify, opts) => {
   } catch (error) {
     fastify.log.error(`Failed to register environment variables: ${error.message}`);
     throw error;
+  }
+
+  try {
+    JSON.parse(fastify.config.ACCOUNT_MAP);
+  } catch (error) {
+    throw new Error("ACCOUNT_MAP is not valid JSON. Check the environment variable for syntax errors.");
   }
 });

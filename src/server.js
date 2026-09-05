@@ -44,6 +44,7 @@ async function registerModules() {
   });
   await fastify.register(require("./plugins/actualConnector"));
   await fastify.register(require("./routes/transaction"));
+  await fastify.register(require("./routes/vietqrTransaction"));
   await fastify.register(require("./routes/health"));
 }
 
