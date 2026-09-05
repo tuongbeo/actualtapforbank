@@ -61,4 +61,67 @@ describe("loadTenants", () => {
     assert.strictEqual(tenants[0].accountMapJson, "{}");
     assert.deepStrictEqual(tenants[0].templates, []);
   });
+
+  it("throws on a duplicate apiKey across two tenants", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tenants-dup-key-"));
+    const dupKeyPath = path.join(dir, "tenants.json");
+    fs.writeFileSync(
+      dupKeyPath,
+      JSON.stringify([
+        { id: "alice", apiKey: "shared-key", actualSyncId: "sync-1", actualPassword: "pw1" },
+        { id: "bob", apiKey: "shared-key", actualSyncId: "sync-2", actualPassword: "pw2" },
+      ])
+    );
+    assert.throws(() => loadTenants(dupKeyPath), /duplicate apiKey/);
+  });
+
+  it("throws when account-map.json is malformed JSON", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tenants-bad-map-"));
+    const tenantsDir = path.join(dir, "tenants", "alice");
+    fs.mkdirSync(tenantsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "tenants.json"),
+      JSON.stringify([{ id: "alice", apiKey: "key-1", actualSyncId: "sync-1", actualPassword: "pw" }])
+    );
+    fs.writeFileSync(path.join(tenantsDir, "account-map.json"), "{ invalid json }");
+    assert.throws(() => loadTenants(path.join(dir, "tenants.json")), /account-map.json is not valid JSON/);
+  });
+
+  it("throws when templates.json fails schema validation", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tenants-bad-schema-"));
+    const tenantsDir = path.join(dir, "tenants", "alice");
+    fs.mkdirSync(tenantsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "tenants.json"),
+      JSON.stringify([{ id: "alice", apiKey: "key-1", actualSyncId: "sync-1", actualPassword: "pw" }])
+    );
+    // Invalid template: missing required "direction" field
+    fs.writeFileSync(
+      path.join(tenantsDir, "templates.json"),
+      JSON.stringify([
+        {
+          name: "bad-template",
+          sourceType: "email",
+          match: { contains: ["test"] },
+          fields: { code: { label: "Code:", stopLabel: "$END$" } },
+          requiredFields: ["code"],
+        },
+      ])
+    );
+    assert.throws(() => loadTenants(path.join(dir, "tenants.json")), /templates.json is invalid/);
+  });
+
+  it("throws when top-level tenants.json is malformed JSON", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tenants-bad-json-"));
+    const badPath = path.join(dir, "tenants.json");
+    fs.writeFileSync(badPath, "{ not valid json ]");
+    assert.throws(() => loadTenants(badPath), /not valid JSON/);
+  });
+
+  it("throws when array contains a non-object entry", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tenants-non-obj-"));
+    const nonObjPath = path.join(dir, "tenants.json");
+    fs.writeFileSync(nonObjPath, JSON.stringify([null]));
+    assert.throws(() => loadTenants(nonObjPath), /entry must be an object/);
+  });
 });

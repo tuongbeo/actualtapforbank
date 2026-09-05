@@ -9,7 +9,13 @@ const loadTenants = (tenantsConfigPath) => {
     throw new Error(`Tenants config not found at "${tenantsConfigPath}"`);
   }
 
-  const rawTenants = JSON.parse(fs.readFileSync(tenantsConfigPath, "utf8"));
+  let rawTenants;
+  try {
+    rawTenants = JSON.parse(fs.readFileSync(tenantsConfigPath, "utf8"));
+  } catch (err) {
+    throw new Error(`Tenants config is not valid JSON: ${err.message}`);
+  }
+
   if (!Array.isArray(rawTenants) || rawTenants.length === 0) {
     throw new Error("Tenants config must be a non-empty array");
   }
@@ -21,6 +27,11 @@ const loadTenants = (tenantsConfigPath) => {
 
   const tenants = rawTenants.map((raw, index) => {
     const tPath = `tenants[${index}]`;
+
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      errors.push(`${tPath}: entry must be an object`);
+      return null;
+    }
 
     if (!isNonEmptyString(raw.id)) errors.push(`${tPath}: "id" is required and must be a non-empty string`);
     if (!isNonEmptyString(raw.apiKey)) errors.push(`${tPath}: "apiKey" is required and must be a non-empty string`);
