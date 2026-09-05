@@ -40,11 +40,20 @@ describe("loadTenants", () => {
     assert.throws(() => loadTenants(path.join(__dirname, "fixtures/tenants/does-not-exist.json")), /not found/);
   });
 
-  it("throws when the array is empty", () => {
+  it("returns an empty array when tenants.json is []", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tenants-empty-"));
     const emptyPath = path.join(dir, "tenants.json");
     fs.writeFileSync(emptyPath, "[]");
-    assert.throws(() => loadTenants(emptyPath), /non-empty array/);
+    assert.deepStrictEqual(loadTenants(emptyPath), []);
+  });
+
+  it("returns each tenant's resolved accountMapPath", () => {
+    const tenants = loadTenants(FIXTURE_VALID);
+    const [alice] = tenants;
+    assert.strictEqual(
+      alice.accountMapPath,
+      path.join(path.dirname(FIXTURE_VALID), "tenants", "alice", "account-map.json")
+    );
   });
 
   it("throws on a duplicate tenant id", () => {
