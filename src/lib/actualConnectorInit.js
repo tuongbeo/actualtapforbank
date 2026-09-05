@@ -1,10 +1,8 @@
 const actual = require("@actual-app/api");
-const fp = require("fastify-plugin");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
 
-// Validate and normalize URL format
 const validateUrl = (url) => {
   if (!url || typeof url !== "string") {
     throw new Error("ACTUAL_URL is not a valid string");
@@ -15,13 +13,12 @@ const validateUrl = (url) => {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error("ACTUAL_URL must use http:// or https:// protocol");
     }
-    return url.replace(/\/+$/, ""); // Remove trailing slashes
+    return url.replace(/\/+$/, "");
   } catch (err) {
     throw new Error(`Invalid ACTUAL_URL format: ${err.message}`);
   }
 };
 
-// Verify network connectivity
 const verifyConnectivity = async (url) => {
   try {
     const response = await fetch(url, {
@@ -46,7 +43,6 @@ const verifyConnectivity = async (url) => {
   }
 };
 
-// Initialize Actual API
 const initializeActual = async (serverURL, password, timeoutMs) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "actualtap-"));
 
@@ -63,7 +59,6 @@ const initializeActual = async (serverURL, password, timeoutMs) => {
   }
 };
 
-// Verify authentication and return budgets
 const verifyAuthentication = async () => {
   try {
     const budgets = await actual.getBudgets();
@@ -76,7 +71,6 @@ const verifyAuthentication = async () => {
   }
 };
 
-// Verify budget exists
 const verifyBudgetExists = (budgets, syncId) => {
   const budget = budgets.find((b) => b.groupId === syncId);
   if (!budget) {
@@ -86,7 +80,6 @@ const verifyBudgetExists = (budgets, syncId) => {
   return budget;
 };
 
-// Download budget with retry logic
 const downloadBudget = async (syncId, encryptionPassword, logger, maxRetries, retryDelay) => {
   let lastError;
 
@@ -100,16 +93,14 @@ const downloadBudget = async (syncId, encryptionPassword, logger, maxRetries, re
         await actual.downloadBudget(syncId);
       }
 
-      return; // Success!
+      return;
     } catch (err) {
       lastError = err;
 
-      // Check for encryption errors - don't retry these
       if (err.message?.includes("decrypt") || err.message?.includes("encryption")) {
         throw new Error(`ACTUAL_ENCRYPTION_PASSWORD is incorrect: ${err.message}`);
       }
 
-      // Log the error and retry if we have attempts left
       logger.warn(`Budget download attempt ${attempt}/${maxRetries} failed: ${err.message || err.reason || err}`);
 
       if (attempt < maxRetries) {
@@ -119,13 +110,11 @@ const downloadBudget = async (syncId, encryptionPassword, logger, maxRetries, re
     }
   }
 
-  // All retries exhausted
   throw new Error(
     `Failed to download budget after ${maxRetries} attempts: ${lastError.message || lastError.reason || lastError}`
   );
 };
 
-// Verify budget is actually open and usable
 const verifyBudgetOpen = async () => {
   try {
     await actual.getAccounts();
@@ -140,55 +129,34 @@ const verifyBudgetOpen = async () => {
   }
 };
 
-const actualConnector = fp(async (fastify) => {
-  const { ACTUAL_URL, ACTUAL_PASSWORD, ACTUAL_SYNC_ID, ACTUAL_ENCRYPTION_PASSWORD } = fastify.config;
-
+const connectToActual = async ({ actualUrl, password, syncId, encryptionPassword, logger }) => {
   const TIMEOUT = 30000;
   const RETRY_COUNT = 3;
   const RETRY_DELAY = 2000;
 
-  fastify.log.info("Initializing Actual connector");
+  logger.info("Initializing Actual connector");
 
-  // Validate and normalize URL
-  const url = validateUrl(ACTUAL_URL);
-  fastify.log.info(`Connecting to: ${url}`);
+  const url = validateUrl(actualUrl);
+  logger.info(`Connecting to: ${url}`);
 
-  // Verify server is reachable
   await verifyConnectivity(url);
-  fastify.log.info("Server is reachable");
+  logger.info("Server is reachable");
 
-  // Initialize Actual API
-  const actualInternal = await initializeActual(url, ACTUAL_PASSWORD, TIMEOUT);
-  fastify.log.info("Actual API initialized");
+  const actualInternal = await initializeActual(url, password, TIMEOUT);
+  logger.info("Actual API initialized");
 
-  // Verify authentication and get budgets
   const budgets = await verifyAuthentication();
-  fastify.log.info(`Authenticated - found ${budgets.length} budget(s)`);
+  logger.info(`Authenticated - found ${budgets.length} budget(s)`);
 
-  // Verify budget exists
-  const budget = verifyBudgetExists(budgets, ACTUAL_SYNC_ID);
-  fastify.log.info(`Budget found: ${budget.name || budget.groupId}`);
+  const budget = verifyBudgetExists(budgets, syncId);
+  logger.info(`Budget found: ${budget.name || budget.groupId}`);
 
-  // Download budget
-  await downloadBudget(ACTUAL_SYNC_ID, ACTUAL_ENCRYPTION_PASSWORD, fastify.log, RETRY_COUNT, RETRY_DELAY);
+  await downloadBudget(syncId, encryptionPassword, logger, RETRY_COUNT, RETRY_DELAY);
 
-  // Verify budget is actually open (catches silent failures like out-of-sync migrations)
   await verifyBudgetOpen();
-  fastify.log.info("Budget downloaded and verified successfully");
+  logger.info("Budget downloaded and verified successfully");
 
-  // Decorate fastify instance
-  fastify.decorate("actual", actual);
-  fastify.decorate("actualInternal", actualInternal);
+  return { actualInternal };
+};
 
-  // Cleanup on shutdown
-  fastify.addHook("onClose", async () => {
-    try {
-      await actual.shutdown();
-      fastify.log.info("Actual API shut down");
-    } catch (err) {
-      fastify.log.error(`Cleanup error: ${err.message}`);
-    }
-  });
-});
-
-module.exports = actualConnector;
+module.exports = { connectToActual };

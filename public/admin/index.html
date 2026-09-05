@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ActualTap — Templates</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
+    aside { width: 260px; border-right: 1px solid #ddd; overflow-y: auto; padding: 12px; box-sizing: border-box; }
+    aside ul { list-style: none; margin: 0; padding: 0; }
+    aside li { padding: 8px; border-radius: 4px; cursor: pointer; }
+    aside li:hover, aside li.active { background: #eef; }
+    main { flex: 1; display: flex; flex-direction: column; padding: 12px; box-sizing: border-box; gap: 12px; }
+    textarea { width: 100%; font-family: monospace; font-size: 13px; box-sizing: border-box; }
+    #editor { flex: 1; min-height: 200px; }
+    #preview-raw { height: 120px; }
+    #preview-result { background: #f7f7f7; padding: 8px; border-radius: 4px; white-space: pre-wrap; font-family: monospace; font-size: 13px; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .error { color: #b00020; }
+    button { padding: 6px 12px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <aside>
+    <div class="row">
+      <button id="new-btn">+ New</button>
+    </div>
+    <ul id="template-list"></ul>
+  </aside>
+  <main>
+    <div class="row">
+      <strong id="editor-title">New template</strong>
+      <button id="save-btn">Save</button>
+      <button id="delete-btn" style="display:none">Delete</button>
+    </div>
+    <textarea id="editor"></textarea>
+    <div id="editor-error" class="error"></div>
+
+    <strong>Preview</strong>
+    <textarea id="preview-raw" placeholder="Paste a sample rawText here"></textarea>
+    <div class="row">
+      <button id="preview-btn">Test</button>
+    </div>
+    <div id="preview-result"></div>
+  </main>
+
+  <script>
+    let currentName = null; // null = unsaved new template
+
+    async function api(method, path, body) {
+      const response = await fetch(path, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || data.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    async function refreshList() {
+      const templates = await api("GET", "/admin/api/templates");
+      const list = document.getElementById("template-list");
+      list.innerHTML = "";
+      for (const t of templates) {
+        const li = document.createElement("li");
+        li.textContent = `${t.name} (${t.sourceType}/${t.direction})`;
+        li.className = t.name === currentName ? "active" : "";
+        li.onclick = () => loadTemplate(t);
+        list.appendChild(li);
+      }
+    }
+
+    function loadTemplate(template) {
+      currentName = template.name;
+      document.getElementById("editor-title").textContent = template.name;
+      document.getElementById("editor").value = JSON.stringify(template, null, 2);
+      document.getElementById("delete-btn").style.display = "inline-block";
+      document.getElementById("editor-error").textContent = "";
+      refreshList();
+    }
+
+    document.getElementById("new-btn").onclick = () => {
+      currentName = null;
+      document.getElementById("editor-title").textContent = "New template";
+      document.getElementById("editor").value = JSON.stringify(
+        { name: "", sourceType: "email", direction: "expense", match: { contains: [] }, fields: {}, requiredFields: [] },
+        null,
+        2
+      );
+      document.getElementById("delete-btn").style.display = "none";
+      document.getElementById("editor-error").textContent = "";
+      refreshList();
+    };
+
+    document.getElementById("save-btn").onclick = async () => {
+      const errorEl = document.getElementById("editor-error");
+      errorEl.textContent = "";
+      let template;
+      try {
+        template = JSON.parse(document.getElementById("editor").value);
+      } catch (err) {
+        errorEl.textContent = `Invalid JSON: ${err.message}`;
+        return;
+      }
+
+      try {
+        if (currentName === null) {
+          await api("POST", "/admin/api/templates", template);
+        } else {
+          await api("PUT", `/admin/api/templates/${encodeURIComponent(currentName)}`, template);
+        }
+        loadTemplate(template);
+      } catch (err) {
+        errorEl.textContent = err.message;
+      }
+    };
+
+    document.getElementById("delete-btn").onclick = async () => {
+      if (currentName === null) return;
+      if (!confirm(`Delete template "${currentName}"?`)) return;
+      await api("DELETE", `/admin/api/templates/${encodeURIComponent(currentName)}`);
+      document.getElementById("new-btn").onclick();
+    };
+
+    document.getElementById("preview-btn").onclick = async () => {
+      const resultEl = document.getElementById("preview-result");
+      resultEl.textContent = "";
+      let template;
+      try {
+        template = JSON.parse(document.getElementById("editor").value);
+      } catch (err) {
+        resultEl.textContent = `Invalid JSON: ${err.message}`;
+        return;
+      }
+
+      try {
+        const result = await api("POST", "/admin/api/preview", {
+          rawText: document.getElementById("preview-raw").value,
+          template,
+        });
+        resultEl.textContent = JSON.stringify(result, null, 2);
+      } catch (err) {
+        resultEl.textContent = err.message;
+      }
+    };
+
+    refreshList();
+  </script>
+</body>
+</html>

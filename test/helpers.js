@@ -1,13 +1,19 @@
 const fastify = require("fastify");
+const { spawnAll } = require("../src/worker/tenantWorkerPool");
+
+const TEST_TENANT_ID = "test-tenant";
+const TEST_API_KEY = "test-key";
 
 /**
- * Build a Fastify server instance for testing.
+ * Build a Fastify server instance for testing against a REAL Actual server.
+ * Requires ACTUAL_URL, ACTUAL_PASSWORD, ACTUAL_SYNC_ID (and optionally
+ * ACTUAL_ENCRYPTION_PASSWORD) to be set in the environment.
  * Uses inject() - no port binding needed.
  */
 async function buildServer() {
   const app = fastify({
     logger: false,
-    pluginTimeout: 120000, // Match src/server.js - Actual API init can exceed Fastify's 10s default
+    pluginTimeout: 120000,
     ajv: {
       customOptions: {
         allowUnionTypes: true,
@@ -15,23 +21,36 @@ async function buildServer() {
     },
   });
 
-  await app.register(require("../src/plugins/env"));
+  app.decorate("config", { API_KEY: TEST_API_KEY });
 
-  // Auth hook
+  const { clients, killAll } = await spawnAll([
+    {
+      id: TEST_TENANT_ID,
+      actualUrl: process.env.ACTUAL_URL,
+      password: process.env.ACTUAL_PASSWORD,
+      syncId: process.env.ACTUAL_SYNC_ID,
+      encryptionPassword: process.env.ACTUAL_ENCRYPTION_PASSWORD,
+    },
+  ]);
+  const workerClient = clients.get(TEST_TENANT_ID);
+
   app.addHook("preHandler", async (request, reply) => {
     if (request.url === "/health" || request.url.startsWith("/health?")) return;
     const apiKey = request.headers["x-api-key"];
     if (apiKey !== app.config.API_KEY) {
       reply.code(401).send({ error: "Unauthorized" });
+      return;
     }
+    request.tenant = { id: TEST_TENANT_ID, workerClient };
   });
 
   await app.register(require("@fastify/cors"), { methods: ["POST"] });
-  await app.register(require("../src/plugins/actualConnector"));
   await app.register(require("../src/routes/transaction"));
   await app.register(require("../src/routes/health"));
 
-  return app;
+  app.addHook("onClose", () => killAll());
+
+  return { app, workerClient };
 }
 
 /**

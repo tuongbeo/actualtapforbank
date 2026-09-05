@@ -624,7 +624,7 @@ git commit -m "Add tenantWorker child-process entrypoint"
 - Test: `test/tenant-worker-pool.test.js`
 
 **Interfaces:**
-- Produces: `spawnAll(tenants: Array<{id, actualUrl, actualPassword, actualSyncId, actualEncryptionPassword}>, workerPath?: string) => Promise<{ clients: Map<string, WorkerClient>, killAll: () => void }>` where `WorkerClient = { getAccounts(), getPayees(), addTransactions(accountId, transactions), sync(), actualInternalSend(method, params) }`. Rejects (and kills every already-spawned child in the same batch) if any tenant reports `{ ready: false }` or its process exits before reporting ready.
+- Produces: `spawnAll(tenants: Array<{id, actualUrl, password, syncId, encryptionPassword}>, workerPath?: string) => Promise<{ clients: Map<string, WorkerClient>, killAll: () => void }>` where `WorkerClient = { getAccounts(), getPayees(), addTransactions(accountId, transactions), sync(), actualInternalSend(method, params) }`. `spawnAll` itself is agnostic to the config object's field names — it forwards each tenant object verbatim via `child.send(tenant)` — but every caller must use exactly `{id, actualUrl, password, syncId, encryptionPassword}`, since that is what `tenantWorker.js` (Task 3) destructures and forwards into `connectToActual` (Task 1). Rejects (and kills every already-spawned child in the same batch) if any tenant reports `{ ready: false }` or its process exits before reporting ready.
 
 - [ ] **Step 1: Create the fake worker fixture**
 
@@ -2005,9 +2005,9 @@ async function registerModules() {
     tenants.map((t) => ({
       id: t.id,
       actualUrl: fastify.config.ACTUAL_URL,
-      actualPassword: t.actualPassword,
-      actualSyncId: t.actualSyncId,
-      actualEncryptionPassword: t.actualEncryptionPassword,
+      password: t.actualPassword,
+      syncId: t.actualSyncId,
+      encryptionPassword: t.actualEncryptionPassword,
     }))
   );
   fastify.log.info(`All ${tenants.length} tenant worker(s) ready`);
@@ -2135,9 +2135,9 @@ async function buildServer() {
     {
       id: TEST_TENANT_ID,
       actualUrl: process.env.ACTUAL_URL,
-      actualPassword: process.env.ACTUAL_PASSWORD,
-      actualSyncId: process.env.ACTUAL_SYNC_ID,
-      actualEncryptionPassword: process.env.ACTUAL_ENCRYPTION_PASSWORD,
+      password: process.env.ACTUAL_PASSWORD,
+      syncId: process.env.ACTUAL_SYNC_ID,
+      encryptionPassword: process.env.ACTUAL_ENCRYPTION_PASSWORD,
     },
   ]);
   const workerClient = clients.get(TEST_TENANT_ID);
@@ -2330,7 +2330,7 @@ Expected: every file passes except `test/initialization.test.js`, `test/tenant-w
 - [ ] **Step 2: Grep for any remaining reference to the removed env vars or the deleted plugin**
 
 Run: `grep -rn "ACCOUNT_MAP\|ACTUAL_SYNC_ID\|ACTUAL_PASSWORD\|ACTUAL_ENCRYPTION_PASSWORD\|TEMPLATES_CONFIG_PATH\|actualConnector" src/ test/ --include="*.js"`
-Expected: no output referencing the old global env vars or `src/plugins/actualConnector.js` outside of `src/lib/actualConnectorInit.js` (which legitimately still has the `ACTUAL_ENCRYPTION_PASSWORD`-shaped error message text, unrelated to the env var name) and `README.md`'s migration section (expected, historical reference).
+Expected matches, all legitimate (do not "fix" these): `test/initialization.test.js`, `test/tenant-worker.test.js`, and `test/helpers.js` read `process.env.ACTUAL_PASSWORD`/`ACTUAL_SYNC_ID`/`ACTUAL_ENCRYPTION_PASSWORD` directly to connect to a real Actual server for those three real-server tests (per Global Constraints, this was already true before this plan and is unchanged); `src/lib/actualConnectorInit.js` legitimately still has the `ACTUAL_ENCRYPTION_PASSWORD`-shaped error message text, unrelated to the env var name. No other match is legitimate: in particular, no `fastify.config.ACCOUNT_MAP`/`fastify.config.ACTUAL_SYNC_ID`/`fastify.config.ACTUAL_PASSWORD`/`fastify.config.ACTUAL_ENCRYPTION_PASSWORD`/`fastify.config.TEMPLATES_CONFIG_PATH` and no import of `src/plugins/actualConnector.js` (deleted in Task 10) should appear anywhere in `src/`. `README.md`'s migration section is not covered by this `src/ test/` grep at all (checked separately, Task 11 — its references to the old names are expected historical documentation).
 
 - [ ] **Step 3: Confirm `config/templates.json` and `config/tenants.json` don't both exist as competing sources**
 

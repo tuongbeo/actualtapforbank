@@ -50,19 +50,19 @@ const createTransaction = (request) => {
   };
 };
 
-const savePayeeLocation = async (fastify, payeeName, latitude, longitude) => {
-  const payee = (await fastify.actual.getPayees()).find(
+const savePayeeLocation = async (fastifyLike, payeeName, latitude, longitude) => {
+  const payee = (await fastifyLike.actual.getPayees()).find(
     ({ name }) => name.toLowerCase() === payeeName.trim().toLowerCase()
   );
   if (!payee) return;
 
-  const nearby = await fastify.actualInternal.send("api/payees-get-nearby", {
+  const nearby = await fastifyLike.actualInternal.send("api/payees-get-nearby", {
     latitude,
     longitude,
     maxDistance: 500,
   });
   if (!nearby.some(({ location }) => location.payee_id === payee.id)) {
-    await fastify.actualInternal.send("api/payee-location-create", { payeeId: payee.id, latitude, longitude });
+    await fastifyLike.actualInternal.send("api/payee-location-create", { payeeId: payee.id, latitude, longitude });
   }
 };
 
@@ -82,9 +82,15 @@ module.exports = async (fastify, opts) => {
       });
     }
 
+    const fastifyLike = {
+      actual: request.tenant.workerClient,
+      actualInternal: { send: request.tenant.workerClient.actualInternalSend },
+      log: fastify.log,
+    };
+
     const transaction = createTransaction(request);
     const accountName = request.body.account;
-    const { accountId, accounts } = await getAccountByName(fastify, accountName);
+    const { accountId, accounts } = await getAccountByName(fastifyLike, accountName);
 
     if (!accountId) {
       return reply.code(400).send({
@@ -93,13 +99,13 @@ module.exports = async (fastify, opts) => {
       });
     }
 
-    await addTransaction(fastify, accountId, transaction);
+    await addTransaction(fastifyLike, accountId, transaction);
 
     // Saving the payee location is best-effort: a failure here must not block
     // the transaction from syncing, so swallow and log rather than 500.
     if (hasLocation) {
       try {
-        await savePayeeLocation(fastify, transaction.payee_name, request.body.latitude, request.body.longitude);
+        await savePayeeLocation(fastifyLike, transaction.payee_name, request.body.latitude, request.body.longitude);
       } catch (locErr) {
         request.log.error(`Failed to save payee location: ${locErr.message}`);
       }
@@ -107,7 +113,7 @@ module.exports = async (fastify, opts) => {
 
     // Explicitly sync to the server so we catch errors (e.g. expired auth)
     // before responding, rather than returning 200 with a silent sync failure
-    const syncResult = await syncBudget(fastify);
+    const syncResult = await syncBudget(fastifyLike);
     if (!syncResult.ok) {
       return reply.code(500).send({
         error: "Sync failed",
