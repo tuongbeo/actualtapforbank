@@ -53,6 +53,14 @@ module.exports = fp(async (fastify, opts) => {
     return "/admin/";
   };
 
+  const NO_TENANT_REQUIRED_PATHS = new Set([
+    "/admin",
+    "/admin/",
+    "/admin/index.html",
+    "/admin/api/me",
+    "/admin/api/register",
+  ]);
+
   fastify.addHook("preHandler", async (request, reply) => {
     if (!request.url.startsWith("/admin")) return;
     if (request.url.startsWith("/admin/login") || request.url.startsWith("/admin/callback")) return;
@@ -71,14 +79,21 @@ module.exports = fp(async (fastify, opts) => {
     }
 
     const tenant = resolveTenantByKeycloakSub(tenantsByKeycloakSub, request.session.userSub);
-    if (!tenant) {
-      reply.code(403).send({
-        error: "No tenant associated with this account",
-        message: `Add "keycloakSub": "${request.session.userSub}" to a tenant's entry in config/tenants.json, then restart.`,
-      });
+    if (tenant) {
+      request.tenant = tenant;
       return;
     }
-    request.tenant = tenant;
+
+    // No tenant yet: only the registration view/API and the static entry page are reachable --
+    // everything else (templates, account-map, preview) requires an already-provisioned tenant.
+    if (NO_TENANT_REQUIRED_PATHS.has(request.url.split("?")[0])) {
+      return;
+    }
+
+    reply.code(403).send({
+      error: "No tenant associated with this account",
+      message: "Visit /admin/ to connect your own Actual Budget account.",
+    });
   });
 
   fastify.get("/admin/login", async (request, reply) => {

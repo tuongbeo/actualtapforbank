@@ -40,6 +40,8 @@ async function buildApp({ oidcClient = fakeOidcClient(), tenantsByKeycloakSub = 
   await app.register(authPlugin, { oidcClient, tenantsByKeycloakSub });
   app.get("/admin/", async () => ({ ok: true, tenant: true }));
   app.post("/admin/test-post", async (request) => ({ tenant: !!request.tenant }));
+  app.get("/admin/api/me", async (request) => ({ tenant: !!request.tenant }));
+  app.post("/admin/api/register", async (request) => ({ tenant: !!request.tenant }));
   return app;
 }
 
@@ -149,14 +151,13 @@ describe("admin guard preHandler", () => {
     await app.close();
   });
 
-  it("returns 403 when the authenticated sub has no matching tenant", async () => {
+  it("lets an authenticated session with no tenant reach GET /admin/ (registration view)", async () => {
     const oidcClient = fakeOidcClient({ sub: "sub-nobody" });
     const app = await buildApp({ oidcClient, tenantsByKeycloakSub: new Map() });
 
     const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
     let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     const state = oidcClient.calls.authorizationUrl[0].state;
-
     const callbackResponse = await app.inject({
       method: "GET",
       url: `/admin/callback?code=good-code&state=${state}`,
@@ -165,6 +166,48 @@ describe("admin guard preHandler", () => {
     cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
 
     const response = await app.inject({ method: "GET", url: "/admin/", headers: { cookie } });
+    assert.strictEqual(response.statusCode, 200);
+    await app.close();
+  });
+
+  it("lets an authenticated session with no tenant reach GET /admin/api/me and POST /admin/api/register", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-nobody" });
+    const app = await buildApp({ oidcClient, tenantsByKeycloakSub: new Map() });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const meResponse = await app.inject({ method: "GET", url: "/admin/api/me", headers: { cookie } });
+    assert.strictEqual(meResponse.statusCode, 200);
+    assert.deepStrictEqual(JSON.parse(meResponse.body), { tenant: false });
+
+    const registerResponse = await app.inject({ method: "POST", url: "/admin/api/register", headers: { cookie } });
+    assert.strictEqual(registerResponse.statusCode, 200);
+    await app.close();
+  });
+
+  it("still 403s a non-allowlisted path (e.g. POST /admin/test-post) when there's no tenant", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-nobody" });
+    const app = await buildApp({ oidcClient, tenantsByKeycloakSub: new Map() });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const response = await app.inject({ method: "POST", url: "/admin/test-post", headers: { cookie } });
     assert.strictEqual(response.statusCode, 403);
     await app.close();
   });
