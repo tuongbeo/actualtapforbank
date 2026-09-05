@@ -1,7 +1,12 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const fastify = require("fastify");
+const fs = require("node:fs");
+const path = require("node:path");
 const adminTemplatesPlugin = require("../src/routes/adminTemplates");
+
+const FIXTURE = fs.readFileSync(path.join(__dirname, "fixtures/bidv-expense.txt"), "utf8");
+const BIDV_TEMPLATE = JSON.parse(fs.readFileSync(path.join(__dirname, "../config/templates.json"), "utf8"))[0];
 
 const TEMPLATE_A = {
   name: "a",
@@ -144,6 +149,64 @@ describe("unauthenticated request (no request.tenant set)", () => {
     const response = await app.inject({ method: "DELETE", url: "/admin/api/templates/a" });
     assert.strictEqual(response.statusCode, 401);
     assert.strictEqual(JSON.parse(response.body).error, "Unauthorized");
+    await app.close();
+  });
+});
+
+describe("POST /admin/api/preview", () => {
+  it("returns matched: true and the parsed fields when the draft template matches", async () => {
+    const { app } = await buildApp({ templates: [] });
+    const response = await app.inject({
+      method: "POST",
+      url: "/admin/api/preview",
+      payload: { rawText: FIXTURE, template: BIDV_TEMPLATE },
+    });
+    assert.strictEqual(response.statusCode, 200);
+    const body = JSON.parse(response.body);
+    assert.strictEqual(body.matched, true);
+    assert.strictEqual(body.parsed.amount, 10000);
+    await app.close();
+  });
+
+  it("returns matched: false when the draft template doesn't match the sample text", async () => {
+    const { app } = await buildApp({ templates: [] });
+    const response = await app.inject({
+      method: "POST",
+      url: "/admin/api/preview",
+      payload: { rawText: "Your OTP code is 123456", template: BIDV_TEMPLATE },
+    });
+    assert.strictEqual(response.statusCode, 200);
+    assert.deepStrictEqual(JSON.parse(response.body), { matched: false });
+    await app.close();
+  });
+
+  it("returns 400 when the draft template itself fails schema validation", async () => {
+    const { app } = await buildApp({ templates: [] });
+    const response = await app.inject({
+      method: "POST",
+      url: "/admin/api/preview",
+      payload: { rawText: FIXTURE, template: { name: "bad" } },
+    });
+    assert.strictEqual(response.statusCode, 400);
+    assert.strictEqual(JSON.parse(response.body).error, "Invalid template");
+    await app.close();
+  });
+
+  it("returns matched: true with an error message when extraction throws", async () => {
+    const { app } = await buildApp({ templates: [] });
+    const brokenTemplate = {
+      ...BIDV_TEMPLATE,
+      fields: { ...BIDV_TEMPLATE.fields, amount: { ...BIDV_TEMPLATE.fields.amount, stopLabel: "$NEVER_PRESENT$" } },
+    };
+    const response = await app.inject({
+      method: "POST",
+      url: "/admin/api/preview",
+      payload: { rawText: FIXTURE, template: brokenTemplate },
+    });
+    assert.strictEqual(response.statusCode, 200);
+    const body = JSON.parse(response.body);
+    assert.strictEqual(body.matched, true);
+    assert.ok(body.error);
     await app.close();
   });
 });

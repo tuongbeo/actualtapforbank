@@ -1,3 +1,4 @@
+const { normalize, identify, extract } = require("../templates");
 const { validateTemplates } = require("../templates/schema");
 
 module.exports = async (fastify, opts) => {
@@ -76,5 +77,29 @@ module.exports = async (fastify, opts) => {
     request.tenant.templatesStore.replaceAll(next); // removing an entry can't introduce a new validation error
 
     return { ok: true };
+  });
+
+  fastify.post("/admin/api/preview", async (request, reply) => {
+    const { rawText, template } = request.body;
+
+    try {
+      validateTemplates([template]);
+    } catch (err) {
+      return reply.code(400).send({ error: "Invalid template", message: err.message });
+    }
+
+    const normalizedText = normalize(rawText);
+    const matched = identify(normalizedText, [template]); // single-element array: never throws AmbiguousMatchError
+
+    if (!matched) {
+      return { matched: false };
+    }
+
+    try {
+      const parsed = extract(normalizedText, matched);
+      return { matched: true, parsed };
+    } catch (err) {
+      return { matched: true, error: err.message };
+    }
   });
 };
