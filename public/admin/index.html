@@ -5,6 +5,7 @@
   <title>ActualTap — Templates</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
+    #register-view, #main-view { flex: 1; }
     aside { width: 260px; border-right: 1px solid #ddd; overflow-y: auto; padding: 12px; box-sizing: border-box; }
     aside ul { list-style: none; margin: 0; padding: 0; }
     aside li { padding: 8px; border-radius: 4px; cursor: pointer; }
@@ -20,31 +21,72 @@
   </style>
 </head>
 <body>
-  <aside>
-    <div class="row">
-      <button id="new-btn">+ New</button>
+  <div id="register-view" hidden>
+    <div style="max-width: 480px; margin: 60px auto; font-family: system-ui, sans-serif;">
+      <h2>Connect your Actual Budget account</h2>
+      <div class="row" style="flex-direction: column; align-items: stretch; gap: 8px;">
+        <label>Actual Sync ID <input id="reg-sync-id" /></label>
+        <label>Actual Password <input id="reg-password" type="password" /></label>
+        <label>Actual Encryption Password (optional) <input id="reg-enc-password" type="password" /></label>
+        <button id="reg-submit-btn">Connect</button>
+        <div id="reg-error" class="error"></div>
+        <div id="reg-success" hidden>
+          <p><strong>Save this API key now — it is shown only once:</strong></p>
+          <code id="reg-api-key" style="user-select: all;"></code>
+          <p><button id="reg-continue-btn">Continue</button></p>
+        </div>
+      </div>
     </div>
-    <ul id="template-list"></ul>
-  </aside>
-  <main>
-    <div class="row">
-      <strong id="editor-title">New template</strong>
-      <button id="save-btn">Save</button>
-      <button id="delete-btn" style="display:none">Delete</button>
-    </div>
-    <textarea id="editor"></textarea>
-    <div id="editor-error" class="error"></div>
+  </div>
 
-    <strong>Preview</strong>
-    <textarea id="preview-raw" placeholder="Paste a sample rawText here"></textarea>
-    <div class="row">
-      <button id="preview-btn">Test</button>
+  <div id="main-view" hidden>
+    <div class="row" style="padding: 8px 12px; border-bottom: 1px solid #ddd;">
+      <button id="tab-templates" class="active">Templates</button>
+      <button id="tab-account-map">Account Map</button>
     </div>
-    <div id="preview-result"></div>
-  </main>
+
+    <div id="templates-tab" style="display: flex; height: calc(100vh - 45px);">
+      <aside>
+        <div class="row">
+          <button id="new-btn">+ New</button>
+        </div>
+        <ul id="template-list"></ul>
+      </aside>
+      <main>
+        <div class="row">
+          <strong id="editor-title">New template</strong>
+          <button id="save-btn">Save</button>
+          <button id="delete-btn" style="display:none">Delete</button>
+        </div>
+        <textarea id="editor"></textarea>
+        <div id="editor-error" class="error"></div>
+
+        <strong>Preview</strong>
+        <textarea id="preview-raw" placeholder="Paste a sample rawText here"></textarea>
+        <div class="row">
+          <button id="preview-btn">Test</button>
+        </div>
+        <div id="preview-result"></div>
+      </main>
+    </div>
+
+    <div id="account-map-tab" style="display: none; padding: 12px;">
+      <p>Maps a bank account number found in a notification's text to an Actual Budget account name.</p>
+      <textarea id="account-map-editor" style="width: 100%; height: 300px; font-family: monospace;"></textarea>
+      <div class="row">
+        <button id="account-map-save-btn">Save</button>
+      </div>
+      <div id="account-map-error" class="error"></div>
+    </div>
+  </div>
 
   <script>
-    let currentName = null; // null = unsaved new template
+    // Deployment path prefix, derived from the URL this page was served at, so the admin UI
+    // works both at the root ("/admin/" -> BASE = "") and under a reverse-proxy prefix
+    // ("/actual-transfer-hub/admin/" -> BASE = "/actual-transfer-hub"). Every fetch below is
+    // built as BASE + "/admin/..." because a root-absolute path would otherwise resolve
+    // against the origin and escape the prefix.
+    const BASE = location.pathname.replace(/\/admin(\/.*)?$/, "");
 
     async function api(method, path, body) {
       const response = await fetch(path, {
@@ -57,8 +99,10 @@
       return data;
     }
 
+    let currentName = null; // null = unsaved new template
+
     async function refreshList() {
-      const templates = await api("GET", "/admin/api/templates");
+      const templates = await api("GET", BASE + "/admin/api/templates");
       const list = document.getElementById("template-list");
       list.innerHTML = "";
       for (const t of templates) {
@@ -105,9 +149,9 @@
 
       try {
         if (currentName === null) {
-          await api("POST", "/admin/api/templates", template);
+          await api("POST", BASE + "/admin/api/templates", template);
         } else {
-          await api("PUT", `/admin/api/templates/${encodeURIComponent(currentName)}`, template);
+          await api("PUT", `${BASE}/admin/api/templates/${encodeURIComponent(currentName)}`, template);
         }
         loadTemplate(template);
       } catch (err) {
@@ -118,7 +162,7 @@
     document.getElementById("delete-btn").onclick = async () => {
       if (currentName === null) return;
       if (!confirm(`Delete template "${currentName}"?`)) return;
-      await api("DELETE", `/admin/api/templates/${encodeURIComponent(currentName)}`);
+      await api("DELETE", `${BASE}/admin/api/templates/${encodeURIComponent(currentName)}`);
       document.getElementById("new-btn").onclick();
     };
 
@@ -134,7 +178,7 @@
       }
 
       try {
-        const result = await api("POST", "/admin/api/preview", {
+        const result = await api("POST", BASE + "/admin/api/preview", {
           rawText: document.getElementById("preview-raw").value,
           template,
         });
@@ -144,7 +188,63 @@
       }
     };
 
-    refreshList();
+    document.getElementById("tab-templates").onclick = () => {
+      document.getElementById("templates-tab").style.display = "flex";
+      document.getElementById("account-map-tab").style.display = "none";
+    };
+    document.getElementById("tab-account-map").onclick = async () => {
+      document.getElementById("templates-tab").style.display = "none";
+      document.getElementById("account-map-tab").style.display = "block";
+      const map = await api("GET", BASE + "/admin/api/account-map");
+      document.getElementById("account-map-editor").value = JSON.stringify(map, null, 2);
+    };
+    document.getElementById("account-map-save-btn").onclick = async () => {
+      const errorEl = document.getElementById("account-map-error");
+      errorEl.textContent = "";
+      let map;
+      try {
+        map = JSON.parse(document.getElementById("account-map-editor").value);
+      } catch (err) {
+        errorEl.textContent = `Invalid JSON: ${err.message}`;
+        return;
+      }
+      try {
+        await api("PUT", BASE + "/admin/api/account-map", map);
+      } catch (err) {
+        errorEl.textContent = err.message;
+      }
+    };
+
+    document.getElementById("reg-submit-btn").onclick = async () => {
+      const errorEl = document.getElementById("reg-error");
+      errorEl.textContent = "";
+      try {
+        const result = await api("POST", BASE + "/admin/api/register", {
+          actualSyncId: document.getElementById("reg-sync-id").value,
+          actualPassword: document.getElementById("reg-password").value,
+          actualEncryptionPassword: document.getElementById("reg-enc-password").value || undefined,
+        });
+        document.getElementById("reg-api-key").textContent = result.apiKey;
+        document.getElementById("reg-success").hidden = false;
+      } catch (err) {
+        errorEl.textContent = err.message;
+      }
+    };
+    document.getElementById("reg-continue-btn").onclick = () => {
+      document.getElementById("register-view").hidden = true;
+      document.getElementById("main-view").hidden = false;
+      refreshList();
+    };
+
+    (async () => {
+      const { registered } = await api("GET", BASE + "/admin/api/me");
+      if (registered) {
+        document.getElementById("main-view").hidden = false;
+        refreshList();
+      } else {
+        document.getElementById("register-view").hidden = false;
+      }
+    })();
   </script>
 </body>
 </html>

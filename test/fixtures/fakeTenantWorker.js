@@ -5,6 +5,15 @@ process.once("message", (config) => {
     return;
   }
 
+  if (config.hangForever) {
+    // Simulates an Actual connection that never completes (e.g. downloadBudget never
+    // resolves): the process stays alive and healthy but never reports ready OR failure, so
+    // spawnOne's promise never settles on its own. Keeps a handle open so the child does not
+    // exit on its own and end the hang prematurely.
+    setInterval(() => {}, 1 << 30);
+    return;
+  }
+
   if (config.exitCleanBeforeReady) {
     // Simulates a worker that exits normally (code 0) without ever sending
     // { ready: true } or { ready: false } -- e.g. a malformed worker script

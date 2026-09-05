@@ -63,67 +63,73 @@ const createWorkerClient = (child) => {
   };
 };
 
-const spawnAll = (tenants, workerPath = DEFAULT_WORKER_PATH, forkOptions = {}) => {
+// Forks one child for `tenant`, waits for its ready handshake, and resolves { child, client }.
+// On any failure (init failure, exit before ready, or a spawn-level error), rejects and kills
+// its own child -- but never touches any other tenant's process, so callers spawning tenants
+// one at a time (dynamic registration) never have a blast radius beyond their own attempt.
+// `onSpawn`, if given, is invoked with the child as soon as it is forked -- before ready/failure
+// is known -- so a caller managing a shared shutdown list (spawnAll, below) can track it early.
+const spawnOne = (tenant, workerPath = DEFAULT_WORKER_PATH, forkOptions = {}, { onSpawn } = {}) => {
   return new Promise((resolve, reject) => {
-    const children = [];
-    const clients = new Map();
     let settled = false;
-    let readyCount = 0;
+    const child = fork(workerPath, [], forkOptions);
+    if (onSpawn) onSpawn(child);
 
-    const killAll = () => children.forEach((child) => child.kill());
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(err);
+    };
 
-    if (tenants.length === 0) {
-      resolve({ clients, killAll });
-      return;
-    }
-
-    tenants.forEach((tenant) => {
-      const child = fork(workerPath, [], forkOptions);
-      children.push(child);
-
-      child.once("message", (msg) => {
-        if (settled) return;
-
-        if (msg.ready) {
-          clients.set(tenant.id, createWorkerClient(child));
-          readyCount += 1;
-          if (readyCount === tenants.length) {
-            settled = true;
-            resolve({ clients, killAll });
-          }
-        } else {
-          settled = true;
-          killAll();
-          reject(new Error(`Tenant "${tenant.id}" failed to initialize: ${msg.error}`));
-        }
-      });
-
-      child.once("exit", (code, signal) => {
-        // Any exit before the ready handshake completes means this tenant
-        // never became ready, regardless of its exit code (a clean code-0
-        // exit before "ready" is just as much a failure as a crash).
-        if (settled) return;
+    child.once("message", (msg) => {
+      if (settled) return;
+      if (msg.ready) {
         settled = true;
-        killAll();
-        reject(
-          new Error(`Tenant "${tenant.id}" worker exited before becoming ready (code ${code}, signal ${signal})`)
-        );
-      });
-
-      child.on("error", (err) => {
-        // Emitted e.g. when fork() itself fails to spawn the process, or the
-        // IPC channel errors out. Never surfaces via "exit" in that case, so
-        // it needs its own handler to preserve the no-leaked-processes
-        // guarantee.
-        if (settled) return;
-        settled = true;
-        killAll();
-        reject(new Error(`Tenant "${tenant.id}" worker failed to spawn: ${err.message}`));
-      });
-
-      child.send(tenant);
+        resolve({ child, client: createWorkerClient(child) });
+      } else {
+        fail(new Error(`Tenant "${tenant.id}" failed to initialize: ${msg.error}`));
+      }
     });
+
+    child.once("exit", (code, signal) => {
+      fail(new Error(`Tenant "${tenant.id}" worker exited before becoming ready (code ${code}, signal ${signal})`));
+    });
+
+    child.on("error", (err) => {
+      fail(new Error(`Tenant "${tenant.id}" worker failed to spawn: ${err.message}`));
+    });
+
+    child.send(tenant);
   });
 };
 
-module.exports = { spawnAll };
+// Forks one child per tenant via spawnOne, all-or-nothing: if any single tenant fails, every
+// child forked in this batch (ready or not) is killed and spawnAll rejects with that tenant's
+// error. `children` is exposed on the resolved object so a caller can append later,
+// dynamically-spawned children (see tenantProvisioning.js) to the same collection this
+// function's own `killAll` drains.
+const spawnAll = (tenants, workerPath = DEFAULT_WORKER_PATH, forkOptions = {}) => {
+  const children = [];
+  const killAll = () => children.forEach((child) => child.kill());
+
+  if (tenants.length === 0) {
+    return Promise.resolve({ clients: new Map(), killAll, children });
+  }
+
+  const onSpawn = (child) => children.push(child);
+
+  return Promise.all(
+    tenants.map((tenant) =>
+      spawnOne(tenant, workerPath, forkOptions, { onSpawn }).then(({ client }) => ({ id: tenant.id, client }))
+    )
+  ).then(
+    (results) => ({ clients: new Map(results.map((r) => [r.id, r.client])), killAll, children }),
+    (err) => {
+      killAll();
+      throw err;
+    }
+  );
+};
+
+module.exports = { spawnAll, spawnOne };

@@ -59,7 +59,7 @@ async function buildRealAuthApp() {
   });
 
   await app.register(require("../src/routes/transaction"));
-  await app.register(require("../src/routes/vietqrTransaction"));
+  await app.register(require("../src/routes/bankTransfer"));
 
   return { app, aliceWorkerClient, bobWorkerClient };
 }

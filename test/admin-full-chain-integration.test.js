@@ -5,11 +5,16 @@ const path = require("node:path");
 const os = require("node:os");
 const fastify = require("fastify");
 const fastifyCookie = require("@fastify/cookie");
-const fastifySession = require("@fastify/session");
 const fastifyCors = require("@fastify/cors");
 
 const { buildTenantLookup, resolveTenant } = require("../src/lib/tenantAuth");
 const { createDedupCache } = require("../src/lib/dedupCache");
+const { loadTenants } = require("../src/lib/tenantRegistry");
+const { spawnAll } = require("../src/worker/tenantWorkerPool");
+const { createTenantProvisioner } = require("../src/lib/tenantProvisioning");
+const { deriveBasePath } = require("../src/lib/adminBasePath");
+
+const FAKE_WORKER_PATH = path.join(__dirname, "fixtures/fakeTenantWorker.js");
 
 const SESSION_SECRET = "a".repeat(32);
 const APP_BASE_URL = "http://actualtap.example.com"; // http on purpose: this test doesn't exercise
@@ -54,7 +59,7 @@ function fakeOidcClient({ sub = "sub-alice" } = {}) {
 // templates.json, and a fake oidcClient (same pattern as test/admin-auth.test.js). This is
 // the one test in the suite that exercises the real chain together end to end, rather than
 // each task's own hand-built minimal server -- see Finding 7 of the final review.
-async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
+async function buildApp({ oidcClient = fakeOidcClient(), appBaseUrl = APP_BASE_URL } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "admin-full-chain-"));
   const templatesPath = path.join(dir, "templates.json");
   fs.writeFileSync(templatesPath, "[]");
@@ -72,7 +77,7 @@ async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
     KEYCLOAK_CLIENT_ID: "actualtap-admin",
     KEYCLOAK_CLIENT_SECRET: "secret",
     SESSION_SECRET,
-    APP_BASE_URL,
+    APP_BASE_URL: appBaseUrl,
   });
 
   const addedTransactions = [];
@@ -93,6 +98,7 @@ async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
       templatesPath,
       templates: [],
       accountMapJson: '{"123456":"Checking"}',
+      accountMapPath: path.join(dir, "tenants", "alice", "account-map.json"),
       keycloakSub: "sub-alice",
     },
   ];
@@ -114,24 +120,97 @@ async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
     request.tenant = tenant;
   });
 
-  // Admin UI stack, in the same order and with the same options as server.js (Findings 1-6).
+  // Admin UI stack, in the same order and with the same options as server.js (Findings 1-6),
+  // including the path-prefix-aware cookie path and auth basePath derived from APP_BASE_URL.
+  const basePath = deriveBasePath(appBaseUrl);
   await app.register(fastifyCookie);
-  await app.register(fastifySession, {
+  await app.register(require("../src/plugins/adminSession"), {
     secret: SESSION_SECRET,
-    saveUninitialized: false,
-    cookie: { secure: APP_BASE_URL.startsWith("https://"), path: "/admin", sameSite: "lax" },
+    secure: appBaseUrl.startsWith("https://"),
+    basePath,
   });
-  await app.register(require("../src/plugins/auth"), { oidcClient, tenantsByKeycloakSub });
+  await app.register(require("../src/plugins/auth"), { oidcClient, tenantsByKeycloakSub, basePath });
   await app.register(require("../src/plugins/staticAdmin"));
   await app.register(require("../src/routes/adminTemplates"));
 
   await app.register(fastifyCors, { methods: ["POST"] });
-  await app.register(require("../src/routes/vietqrTransaction"), { dedupCache: createDedupCache() });
+  await app.register(require("../src/routes/bankTransfer"), { dedupCache: createDedupCache() });
 
   return { app, templatesPath };
 }
 
-describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /vietqr-transaction)", () => {
+// A second, separate app builder for the zero-tenant-boot + self-registration scenario --
+// deliberately independent of buildApp() above. Mirrors server.js's real Task 10 wiring:
+// loadTenants() from a real tenants.json, spawnAll()/spawnOne() against the real
+// fakeTenantWorker.js fixture, and the real tenantProvisioner wired into adminRegister.
+async function buildFreshApp({ oidcClient = fakeOidcClient({ sub: "sub-new-user" }) } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "admin-full-chain-fresh-"));
+  const tenantsConfigPath = path.join(dir, "tenants.json");
+  fs.writeFileSync(tenantsConfigPath, "[]");
+
+  const app = fastify({
+    logger: false,
+    ajv: { customOptions: { allowUnionTypes: true } },
+    routerOptions: { ignoreTrailingSlash: true },
+    trustProxy: true,
+  });
+
+  app.decorate("config", {
+    ACTUAL_URL: "http://actual.example.com",
+    TENANTS_CONFIG_PATH: tenantsConfigPath,
+    KEYCLOAK_ISSUER_URL: "https://keycloak.example.com/realms/actual",
+    KEYCLOAK_CLIENT_ID: "actualtap-admin",
+    KEYCLOAK_CLIENT_SECRET: "secret",
+    SESSION_SECRET,
+    APP_BASE_URL,
+  });
+
+  const tenants = loadTenants(tenantsConfigPath); // [] -- nobody registered yet
+  const { clients: workerClients, children } = await spawnAll([], FAKE_WORKER_PATH);
+  const { tenantsById, tenantsByApiKey, tenantsByKeycloakSub } = buildTenantLookup(tenants, workerClients);
+
+  app.addHook("preHandler", async (request, reply) => {
+    if (request.url === "/health" || request.url.startsWith("/health?") || request.url.startsWith("/admin")) {
+      return;
+    }
+    const apiKey = request.headers["x-api-key"];
+    const tenant = resolveTenant(tenantsByApiKey, apiKey);
+    if (!tenant) {
+      reply.code(401).send({ error: "Unauthorized" });
+      return;
+    }
+    request.tenant = tenant;
+  });
+
+  await app.register(fastifyCookie);
+  await app.register(require("../src/plugins/adminSession"), {
+    secret: SESSION_SECRET,
+    secure: APP_BASE_URL.startsWith("https://"),
+    basePath: deriveBasePath(APP_BASE_URL),
+  });
+  await app.register(require("../src/plugins/auth"), { oidcClient, tenantsByKeycloakSub });
+  await app.register(require("../src/plugins/staticAdmin"));
+  await app.register(require("../src/routes/adminTemplates"));
+  await app.register(require("../src/routes/adminAccountMap"));
+
+  const { registerTenant } = createTenantProvisioner({
+    tenantsConfigPath,
+    actualUrl: "http://actual.example.com",
+    workerPath: FAKE_WORKER_PATH,
+    tenantsById,
+    tenantsByApiKey,
+    tenantsByKeycloakSub,
+    onWorkerSpawned: (child) => children.push(child),
+  });
+  await app.register(require("../src/routes/adminRegister"), { registerTenant });
+
+  await app.register(fastifyCors, { methods: ["POST"] });
+  await app.register(require("../src/routes/bankTransfer"), { dedupCache: createDedupCache() });
+
+  return { app, children };
+}
+
+describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /bank-transfer)", () => {
   it("drives the whole real chain end to end", async () => {
     const oidcClient = fakeOidcClient({ sub: "sub-alice" });
     const { app, templatesPath } = await buildApp({ oidcClient });
@@ -179,17 +258,17 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /vi
     const onDisk = JSON.parse(fs.readFileSync(templatesPath, "utf8"));
     assert.deepStrictEqual(onDisk, [TEMPLATE]);
 
-    // 5. POST /vietqr-transaction with the tenant's API key and matching rawText -> proves the
+    // 5. POST /bank-transfer with the tenant's API key and matching rawText -> proves the
     // SAME templatesStore instance is shared end to end between the admin API and the
     // data-plane route (no restart / no separate store).
-    const vietqrResponse = await app.inject({
+    const bankTransferResponse = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "alice-api-key", "content-type": "application/json" },
       payload: { rawText: SAMPLE_TEXT },
     });
-    assert.strictEqual(vietqrResponse.statusCode, 200);
-    const body = JSON.parse(vietqrResponse.body);
+    assert.strictEqual(bankTransferResponse.statusCode, 200);
+    const body = JSON.parse(bankTransferResponse.body);
     assert.strictEqual(body.amount, -2500); // "expense" direction -> signed negative
     assert.strictEqual(app.addedTransactions.length, 1);
 
@@ -224,6 +303,83 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /vi
     assert.ok(setCookieHeader, "expected /admin/login to set a session cookie");
     const setCookie = Array.isArray(setCookieHeader) ? setCookieHeader.join("; ") : setCookieHeader;
     assert.ok(/Path=\/admin/i.test(setCookie), `expected cookie to be scoped to /admin, got: ${setCookie}`);
+
+    await app.close();
+  });
+
+  // Spec §12: "An APP_BASE_URL with a path component produces a session cookie whose
+  // Set-Cookie Path attribute includes that prefix" -- and, per final-review Finding 1, the
+  // login redirect the browser is given must carry the prefix too.
+  it("an APP_BASE_URL with a path component prefixes both the cookie Path and the login redirect", async () => {
+    const PREFIX = "/actual-transfer-hub";
+    const { app } = await buildApp({ appBaseUrl: `http://cash.example.com${PREFIX}` });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    const setCookieHeader = loginResponse.headers["set-cookie"];
+    assert.ok(setCookieHeader, "expected /admin/login to set a session cookie");
+    const setCookieList = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+    // Exactly one sessionId cookie -- a second, stray one scoped to the unprefixed internal path
+    // would leak this app's session token onto a path it does not own on the shared external
+    // origin (the rewrite must REPLACE the internal-path cookie, never ship both).
+    const sessionCookies = setCookieList.filter((c) => c.startsWith("sessionId="));
+    assert.strictEqual(sessionCookies.length, 1, `expected exactly one sessionId cookie, got: ${setCookieList.join(" | ")}`);
+    const setCookie = sessionCookies[0];
+    assert.ok(
+      new RegExp(`Path=${PREFIX}/admin`, "i").test(setCookie),
+      `expected the cookie Path to include the deployment prefix, got: ${setCookie}`
+    );
+
+    const guardedResponse = await app.inject({ method: "GET", url: "/admin/" });
+    assert.strictEqual(guardedResponse.statusCode, 302);
+    assert.ok(
+      guardedResponse.headers.location.startsWith(`${PREFIX}/admin/login`),
+      `expected a prefixed login redirect, got: ${guardedResponse.headers.location}`
+    );
+
+    await app.close();
+  });
+
+  // The prefixed cookie Path is only half the story: the session itself must still work on the
+  // app-internal (prefix-stripped) URLs this process actually receives. Getting this wrong
+  // silently disables sessions and every login ends in a 400 "Invalid state".
+  it("a prefixed deployment still completes a full login round-trip on stripped internal URLs", async () => {
+    const PREFIX = "/actual-transfer-hub";
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const { app } = await buildApp({ oidcClient, appBaseUrl: `http://cash.example.com${PREFIX}` });
+
+    // The proxy strips the prefix, so every URL below is the unprefixed one the app sees.
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    assert.strictEqual(loginResponse.statusCode, 302);
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    assert.ok(cookie.length > 0, "expected a pre-auth session cookie");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    // A 400 here means the PKCE state never survived in a session (the failure mode when the
+    // session cookie path is scoped to the browser-facing prefix instead of the internal path).
+    assert.strictEqual(callbackResponse.statusCode, 302, `callback failed: ${callbackResponse.body}`);
+    assert.strictEqual(callbackResponse.headers.location, `${PREFIX}/admin/`);
+    const postAuthSetCookie = callbackResponse.headers["set-cookie"];
+    const postAuthCookieList = Array.isArray(postAuthSetCookie) ? postAuthSetCookie : [postAuthSetCookie];
+    const postAuthSessionCookies = postAuthCookieList.filter((c) => c.startsWith("sessionId="));
+    assert.strictEqual(
+      postAuthSessionCookies.length,
+      1,
+      `expected exactly one post-login sessionId cookie (no stray internal-path duplicate), got: ${postAuthCookieList.join(" | ")}`
+    );
+    const postAuthCookieHeader = postAuthSessionCookies[0];
+    assert.ok(
+      new RegExp(`Path=${PREFIX}/admin`, "i").test(postAuthCookieHeader),
+      `post-login cookie must stay prefixed, got: ${postAuthCookieHeader}`
+    );
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const indexResponse = await app.inject({ method: "GET", url: "/admin/", headers: { cookie } });
+    assert.strictEqual(indexResponse.statusCode, 200);
 
     await app.close();
   });
@@ -324,6 +480,50 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /vi
       assert.notStrictEqual(postAuthCookie.value, preAuthCookie.value, "session ID must change after login");
     }
 
+    await app.close();
+  });
+});
+
+describe("Zero-tenant boot + self-service registration", () => {
+  it("lets a fresh deployment's first user self-register and immediately use /bank-transfer", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-new-user" });
+    const { app, children } = await buildFreshApp({ oidcClient });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const meBefore = await app.inject({ method: "GET", url: "/admin/api/me", headers: { cookie } });
+    assert.deepStrictEqual(JSON.parse(meBefore.body), { registered: false });
+
+    const registerResponse = await app.inject({
+      method: "POST",
+      url: "/admin/api/register",
+      headers: { cookie },
+      payload: { actualSyncId: "sync-new", actualPassword: "pw" },
+    });
+    assert.strictEqual(registerResponse.statusCode, 201);
+    const { apiKey } = JSON.parse(registerResponse.body);
+
+    const meAfter = await app.inject({ method: "GET", url: "/admin/api/me", headers: { cookie } });
+    assert.deepStrictEqual(JSON.parse(meAfter.body), { registered: true });
+
+    // Immediately usable on the data plane, same running server, no restart
+    const bankTransferResponse = await app.inject({
+      method: "POST",
+      url: "/bank-transfer",
+      headers: { "x-api-key": apiKey },
+      payload: { rawText: "no template will match this -- proves auth succeeded, not that parsing did" },
+    });
+    assert.notStrictEqual(bankTransferResponse.statusCode, 401);
+
+    for (const child of children) child.kill();
     await app.close();
   });
 });

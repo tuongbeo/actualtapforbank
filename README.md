@@ -88,9 +88,9 @@ curl -X POST https://actualtap.yourdomain.com/transaction \
   }'
 ```
 
-### VietQR / Bank-email Transaction Import
+### Bank-Transfer Notification Import
 
-`POST /vietqr-transaction` accepts raw bank-notification text (e.g. the plain-text body of a bank email) and automatically detects the source bank, parses the transaction, and creates it in Actual Budget — no need to structure the request yourself.
+`POST /bank-transfer` accepts raw bank-notification text (e.g. the plain-text body of a bank email) and automatically detects the source bank, parses the transaction, and creates it in Actual Budget — no need to structure the request yourself.
 
 #### Request Body
 
@@ -107,7 +107,7 @@ The source Actual account is resolved via the per-tenant `account-map.json` (see
 
 #### Template Configuration
 
-Bank-notification parsing is driven entirely by the per-tenant `config/tenants/<tenant-id>/templates.json` file (or an empty list if the file is missing). The file is read and validated **once at startup** — edit it and restart the container for changes to take effect. An invalid file stops the server at boot; a missing file leaves zero templates loaded, and every `/vietqr-transaction` request then returns `400 Unrecognized bank format`.
+Bank-notification parsing is driven entirely by the per-tenant `config/tenants/<tenant-id>/templates.json` file (or an empty list if the file is missing). The file is read and validated **once at startup** — edit it and restart the container for changes to take effect. An invalid file stops the server at boot; a missing file leaves zero templates loaded, and every `/bank-transfer` request then returns `400 Unrecognized bank format`.
 
 The file is a JSON array of template objects:
 
@@ -151,7 +151,7 @@ Each entry in `fields` is either **label-based** or **regex-based**:
 
 ##### Reserved field names
 
-Most field names are free-form, but these are consumed by `/vietqr-transaction` when building the Actual transaction:
+Most field names are free-form, but these are consumed by `/bank-transfer` when building the Actual transaction:
 
 | Field                 | Used for                                                                                        |
 | --------------------- | ------------------------------------------------------------------------------------------------- |
@@ -187,8 +187,8 @@ Each tenant may have optional per-tenant configuration files in `config/tenants/
 
 **This path is always relative to wherever `TENANTS_CONFIG_PATH` itself points, not a fixed location.** With the default `TENANTS_CONFIG_PATH=config/tenants.json`, per-tenant files live under `config/tenants/<tenant-id>/` as shown below — but if you set `TENANTS_CONFIG_PATH=/secrets/tenants.json`, ActualTap looks for per-tenant files under `/secrets/tenants/<tenant-id>/` instead, since the tenant directory is derived from the directory containing the tenant registry file, not from a hardcoded `config/` prefix.
 
-- **`account-map.json`** — Maps bank account numbers to Actual Budget account names, used by `/vietqr-transaction` to route imported transactions. Same shape as the old `ACCOUNT_MAP` environment variable. Defaults to `{}` if missing.
-- **`templates.json`** — Bank-notification templates for `/vietqr-transaction` parsing. Same shape as the old `config/templates.json`. Defaults to `[]` (no templates) if missing. See [Template Configuration](#template-configuration) for schema details.
+- **`account-map.json`** — Maps bank account numbers to Actual Budget account names, used by `/bank-transfer` to route imported transactions. Same shape as the old `ACCOUNT_MAP` environment variable. Defaults to `{}` if missing.
+- **`templates.json`** — Bank-notification templates for `/bank-transfer` parsing. Same shape as the old `config/templates.json`. Defaults to `[]` (no templates) if missing. See [Template Configuration](#template-configuration) for schema details.
 
 ### Example: Single-Tenant Deployment
 
@@ -234,19 +234,29 @@ To add more tenants to an existing deployment:
 3. Optionally create `config/tenants/<new-id>/account-map.json` and/or `config/tenants/<new-id>/templates.json` if needed
 4. Restart the application to load the new tenant
 
-## Admin UI (Template Editor)
+## Admin UI (Template Editor + Self-Service Onboarding)
 
-Setting all 5 of `KEYCLOAK_ISSUER_URL`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `SESSION_SECRET`, `APP_BASE_URL` enables a browser-based admin page at `/admin/`, gated behind Keycloak login, for creating/editing/deleting/previewing a tenant's `/vietqr-transaction` templates without hand-editing `templates.json` or restarting the container. Leaving all 5 unset disables the feature entirely (`/admin/*` returns 404); setting only some of them is treated as a misconfiguration and the server refuses to start, naming which ones are missing.
+Setting all 5 of `KEYCLOAK_ISSUER_URL`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `SESSION_SECRET`, `APP_BASE_URL` enables a browser-based admin page at `/admin/`, gated behind Keycloak login. Leaving all 5 unset disables the feature entirely (`/admin/*` returns 404); setting only some of them is treated as a misconfiguration and the server refuses to start, naming which ones are missing.
 
-**Mapping a Keycloak user to a tenant:** add `"keycloakSub": "<the user's Keycloak subject id>"` to that tenant's entry in `config/tenants.json`. A user who logs in successfully but has no `keycloakSub` mapped to any tenant sees a `403` explaining exactly what to add and where.
+**Self-service tenant onboarding:** a user who logs in successfully and has no tenant yet sees a form to connect their own Actual Budget account (sync ID, password, optional encryption password) instead of a dead end. On success, a new tenant is created immediately — no server restart, no operator involvement — and a freshly generated API key is shown exactly once for use with `/transaction` and `/bank-transfer`.
 
-**Registering the Keycloak client:** create an OIDC client in your Keycloak realm with the Authorization Code flow and PKCE enabled, and register `${APP_BASE_URL}/admin/callback` as a valid redirect URI.
+Once registered, the admin UI lets a tenant create/edit/delete/preview their own bank-transfer notification templates, and configure their own bank-account → Actual-account map — both take effect on the very next request, no restart required.
 
-Changes made through the admin UI take effect on the very next `/vietqr-transaction` request — no restart required (this is the one exception to the rest of this app's "edit the file and restart" model).
+**Registering the Keycloak client:** create a confidential OIDC client in your Keycloak realm with the Authorization Code flow and PKCE enabled (Direct Access Grants, Implicit, and Service Accounts left off), and register `${APP_BASE_URL}/admin/callback` as a valid redirect URI and `${APP_BASE_URL}/admin/login` as a valid post-logout redirect URI.
+
+**Deploying under a URL path prefix** (e.g. `APP_BASE_URL=https://example.com/actual-transfer-hub`, sharing a domain with other apps): strip the prefix at the reverse proxy so this app continues to see plain `/admin/*` paths — for nginx:
+
+```nginx
+location /actual-transfer-hub/ {
+  proxy_pass http://actualtap:3001/;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
 
 ## Setup and Installation
 
-**Note:** Actual Tap requires a `config/tenants.json` file to run. See [Multi-Tenant Configuration](#multi-tenant-configuration) for setup details.
+**Note:** Actual Tap requires a `config/tenants.json` file to exist (an empty array `[]` is valid — the server starts with zero tenants and the first one can self-register through the admin UI, or an operator can hand-add entries as before). See [Multi-Tenant Configuration](#multi-tenant-configuration) for setup details.
 
 ### Running with Docker
 

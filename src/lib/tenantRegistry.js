@@ -16,8 +16,8 @@ const loadTenants = (tenantsConfigPath) => {
     throw new Error(`Tenants config is not valid JSON: ${err.message}`);
   }
 
-  if (!Array.isArray(rawTenants) || rawTenants.length === 0) {
-    throw new Error("Tenants config must be a non-empty array");
+  if (!Array.isArray(rawTenants)) {
+    throw new Error("Tenants config must be an array");
   }
 
   const errors = [];
@@ -80,6 +80,7 @@ const loadTenants = (tenantsConfigPath) => {
       apiKey: raw.apiKey,
       keycloakSub: raw.keycloakSub || null,
       accountMapJson,
+      accountMapPath,
       templates,
       templatesPath,
     };

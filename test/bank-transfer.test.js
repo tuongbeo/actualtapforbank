@@ -47,21 +47,21 @@ async function buildMockServer({
       id: tenantId,
       workerClient: mockWorkerClient,
       templatesStore: { getTemplates: () => templates },
-      accountMapJson,
+      accountMapStore: { getMapJson: () => accountMapJson },
     };
   });
 
-  await app.register(require("../src/routes/vietqrTransaction"), { dedupCache });
+  await app.register(require("../src/routes/bankTransfer"), { dedupCache });
 
   return app;
 }
 
-describe("POST /vietqr-transaction", () => {
+describe("POST /bank-transfer", () => {
   it("creates an expense transaction from a matching BIDV email", async () => {
     const app = await buildMockServer();
     const response = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -82,7 +82,7 @@ describe("POST /vietqr-transaction", () => {
     const app = await buildMockServer();
     const response = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: "Your OTP code is 123456" },
     });
@@ -97,7 +97,7 @@ describe("POST /vietqr-transaction", () => {
     const incomeText = FIXTURE.replace("Tài khoản nguồn:", "Tài khoản đích:");
     const response = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: incomeText },
     });
@@ -129,7 +129,7 @@ describe("POST /vietqr-transaction", () => {
     const app = await buildMockServer({ templates: duplicateTemplates });
     const response = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: "FOO: bar" },
     });
@@ -143,7 +143,7 @@ describe("POST /vietqr-transaction", () => {
     const app = await buildMockServer({ accountMapJson: "{}" });
     const response = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -157,7 +157,7 @@ describe("POST /vietqr-transaction", () => {
     const app = await buildMockServer();
     const first = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -165,7 +165,7 @@ describe("POST /vietqr-transaction", () => {
 
     const second = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -182,7 +182,7 @@ describe("POST /vietqr-transaction", () => {
 
     const aliceResponse = await appAlice.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -191,7 +191,7 @@ describe("POST /vietqr-transaction", () => {
 
     const bobResponse = await appBob.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -212,7 +212,7 @@ describe("POST /vietqr-transaction", () => {
     const app = await buildMockServer({ syncBehaviour: "fail" });
     const response = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -226,7 +226,7 @@ describe("POST /vietqr-transaction", () => {
     const app = await buildMockServer({ accounts: [] });
     const first = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -235,7 +235,7 @@ describe("POST /vietqr-transaction", () => {
 
     const second = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -252,7 +252,7 @@ describe("POST /vietqr-transaction", () => {
 
     const first = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });
@@ -266,7 +266,7 @@ describe("POST /vietqr-transaction", () => {
 
     const second = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "test-key", "content-type": "application/json" },
       payload: { rawText: FIXTURE },
     });

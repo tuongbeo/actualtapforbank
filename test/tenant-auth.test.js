@@ -12,6 +12,13 @@ function tempTemplatesPath(initialContent = []) {
   return templatesPath;
 }
 
+function tempAccountMapPath(initialContent = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tenant-auth-map-"));
+  const accountMapPath = path.join(dir, "account-map.json");
+  fs.writeFileSync(accountMapPath, JSON.stringify(initialContent));
+  return accountMapPath;
+}
+
 const validTemplate = (name) => ({
   name,
   sourceType: "email",
@@ -28,6 +35,7 @@ const buildTenants = () => [
     templates: [validTemplate("t-alice")],
     templatesPath: tempTemplatesPath([validTemplate("t-alice")]),
     accountMapJson: '{"1":"Alice Acc"}',
+    accountMapPath: tempAccountMapPath({ "1": "Alice Acc" }),
     keycloakSub: "sub-alice",
   },
   {
@@ -36,6 +44,7 @@ const buildTenants = () => [
     templates: [validTemplate("t-bob")],
     templatesPath: tempTemplatesPath([validTemplate("t-bob")]),
     accountMapJson: '{"2":"Bob Acc"}',
+    accountMapPath: tempAccountMapPath({ "2": "Bob Acc" }),
     keycloakSub: null,
   },
 ];
@@ -54,7 +63,9 @@ describe("buildTenantLookup / resolveTenant", () => {
     assert.strictEqual(typeof alice.templatesStore.getTemplates, "function");
     assert.strictEqual(typeof alice.templatesStore.replaceAll, "function");
     assert.deepStrictEqual(alice.templatesStore.getTemplates(), [validTemplate("t-alice")]);
-    assert.strictEqual(alice.accountMapJson, '{"1":"Alice Acc"}');
+    assert.strictEqual(typeof alice.accountMapStore.getMapJson, "function");
+    assert.strictEqual(typeof alice.accountMapStore.replaceAll, "function");
+    assert.deepStrictEqual(JSON.parse(alice.accountMapStore.getMapJson()), { "1": "Alice Acc" });
     assert.strictEqual(alice.keycloakSub, "sub-alice");
   });
 
@@ -90,6 +101,20 @@ describe("buildTenantLookup / resolveTenant", () => {
     assert.deepStrictEqual(bob.templatesStore.getTemplates(), [validTemplate("t-bob")]);
     const bobOnDisk = JSON.parse(fs.readFileSync(tenants[1].templatesPath, "utf8"));
     assert.deepStrictEqual(bobOnDisk, [validTemplate("t-bob")]);
+  });
+
+  it("each tenant's accountMapStore.replaceAll() is independent (writes only that tenant's file)", () => {
+    const tenants = buildTenants();
+    const { tenantsByApiKey } = buildTenantLookup(tenants, new Map());
+    const alice = resolveTenant(tenantsByApiKey, "alice-key");
+    const bob = resolveTenant(tenantsByApiKey, "bob-key");
+
+    alice.accountMapStore.replaceAll({ "1": "Alice Acc v2" });
+
+    assert.deepStrictEqual(JSON.parse(alice.accountMapStore.getMapJson()), { "1": "Alice Acc v2" });
+    assert.deepStrictEqual(JSON.parse(bob.accountMapStore.getMapJson()), { "2": "Bob Acc" });
+    const bobOnDisk = JSON.parse(fs.readFileSync(tenants[1].accountMapPath, "utf8"));
+    assert.deepStrictEqual(bobOnDisk, { "2": "Bob Acc" });
   });
 });
 

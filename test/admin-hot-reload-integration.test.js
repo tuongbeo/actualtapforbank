@@ -44,7 +44,7 @@ async function buildApp() {
       id: "alice",
       workerClient: mockWorkerClient,
       templatesStore,
-      accountMapJson: '{"123456":"Checking"}',
+      accountMapStore: { getMapJson: () => '{"123456":"Checking"}' },
     };
   });
 
@@ -52,7 +52,7 @@ async function buildApp() {
   // src/server.js does in production (adminTemplates and vietqrTransaction are both
   // registered directly on the top-level `fastify` instance, sharing request.tenant).
   // This is what makes the test prove live/shared state rather than two independent copies.
-  await app.register(require("../src/routes/vietqrTransaction"), { dedupCache: createDedupCache() });
+  await app.register(require("../src/routes/bankTransfer"), { dedupCache: createDedupCache() });
   await app.register(require("../src/routes/adminTemplates"));
 
   return app;
@@ -62,14 +62,14 @@ describe("Admin UI hot-reload (no restart required)", () => {
   it("a template created via the admin API is immediately usable by /vietqr-transaction", async () => {
     const app = await buildApp();
 
-    const before = await app.inject({ method: "POST", url: "/vietqr-transaction", payload: { rawText: SAMPLE_TEXT } });
+    const before = await app.inject({ method: "POST", url: "/bank-transfer", payload: { rawText: SAMPLE_TEXT } });
     assert.strictEqual(before.statusCode, 400);
     assert.strictEqual(JSON.parse(before.body).error, "Unrecognized bank format");
 
     const createResponse = await app.inject({ method: "POST", url: "/admin/api/templates", payload: TEMPLATE });
     assert.strictEqual(createResponse.statusCode, 200);
 
-    const after = await app.inject({ method: "POST", url: "/vietqr-transaction", payload: { rawText: SAMPLE_TEXT } });
+    const after = await app.inject({ method: "POST", url: "/bank-transfer", payload: { rawText: SAMPLE_TEXT } });
     assert.strictEqual(after.statusCode, 200);
     assert.strictEqual(app.addedTransactions.length, 1);
 
@@ -80,12 +80,12 @@ describe("Admin UI hot-reload (no restart required)", () => {
     const app = await buildApp();
     await app.inject({ method: "POST", url: "/admin/api/templates", payload: TEMPLATE });
 
-    const before = await app.inject({ method: "POST", url: "/vietqr-transaction", payload: { rawText: SAMPLE_TEXT } });
+    const before = await app.inject({ method: "POST", url: "/bank-transfer", payload: { rawText: SAMPLE_TEXT } });
     assert.strictEqual(before.statusCode, 200);
 
     await app.inject({ method: "DELETE", url: `/admin/api/templates/${TEMPLATE.name}` });
 
-    const after = await app.inject({ method: "POST", url: "/vietqr-transaction", payload: { rawText: SAMPLE_TEXT } });
+    const after = await app.inject({ method: "POST", url: "/bank-transfer", payload: { rawText: SAMPLE_TEXT } });
     assert.strictEqual(after.statusCode, 400);
 
     await app.close();
