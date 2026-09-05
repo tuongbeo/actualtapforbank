@@ -43,7 +43,10 @@ module.exports = fp(async (fastify, opts) => {
       typeof value === "string" &&
       value.startsWith("/") &&
       !value.startsWith("//") &&
-      !value.includes("://")
+      !value.includes("://") &&
+      !value.includes("\\") && // a backslash lets WHATWG URL parsing (what browsers use to
+      // resolve a Location header) treat "/\host" as "//host", bypassing the "//" check above
+      !/[\x00-\x1f\x7f]/.test(value) // reject control characters (e.g. CR/LF header injection attempts)
     ) {
       return value;
     }
@@ -116,7 +119,7 @@ module.exports = fp(async (fastify, opts) => {
     const claims = tokenSet.claims();
     // Captured before regenerate() below replaces request.session with a fresh (empty)
     // instance, which would otherwise wipe this along with the PKCE fields.
-    const returnTo = request.session.returnTo || "/admin/";
+    const returnTo = sanitizeReturnTo(request.session.returnTo);
 
     // Regenerate the session (fresh session ID) before writing authenticated state onto it,
     // rather than reusing the pre-auth session that /admin/login created -- prevents session

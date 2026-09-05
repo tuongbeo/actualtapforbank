@@ -250,6 +250,60 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /vi
     await app.close();
   });
 
+  it("backslash-based open-redirect returnTo is rejected (WHATWG URL parsing treats /\\host as //host)", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const { app } = await buildApp({ oidcClient });
+
+    for (const payload of ["/\\evil.example.com", "/\\/evil.example.com"]) {
+      const loginResponse = await app.inject({
+        method: "GET",
+        url: "/admin/login?returnTo=" + encodeURIComponent(payload),
+      });
+      const cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+      const state = oidcClient.calls.authorizationUrl[oidcClient.calls.authorizationUrl.length - 1].state;
+
+      const callbackResponse = await app.inject({
+        method: "GET",
+        url: `/admin/callback?code=good-code&state=${state}`,
+        headers: { cookie },
+      });
+      assert.strictEqual(callbackResponse.statusCode, 302);
+      assert.strictEqual(
+        callbackResponse.headers.location,
+        "/admin/",
+        `payload ${JSON.stringify(payload)} should fall back to /admin/, got ${callbackResponse.headers.location}`
+      );
+      // Confirm the WHATWG URL parser (what a real browser uses to resolve a Location
+      // header) would indeed have treated the rejected payload as off-site, proving this
+      // case is a real bypass attempt and not a vacuous check.
+      assert.notStrictEqual(new URL(payload, "https://actualtap.example.com").host, "actualtap.example.com");
+    }
+
+    await app.close();
+  });
+
+  it("returnTo containing control characters (e.g. CRLF) is rejected", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const { app } = await buildApp({ oidcClient });
+
+    const loginResponse = await app.inject({
+      method: "GET",
+      url: "/admin/login?returnTo=" + encodeURIComponent("/x\r\nSet-Cookie: a=b"),
+    });
+    const cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[oidcClient.calls.authorizationUrl.length - 1].state;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    assert.strictEqual(callbackResponse.statusCode, 302);
+    assert.strictEqual(callbackResponse.headers.location, "/admin/");
+
+    await app.close();
+  });
+
   it("session ID changes after login (Finding 5: regenerate() defeats session fixation)", async () => {
     const oidcClient = fakeOidcClient({ sub: "sub-alice" });
     const { app } = await buildApp({ oidcClient });
