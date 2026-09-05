@@ -6,6 +6,13 @@ const DEFAULT_WORKER_PATH = path.join(__dirname, "tenantWorker.js");
 const createWorkerClient = (child) => {
   const pending = new Map();
   let counter = 0;
+  let dead = false;
+
+  const rejectAllPending = (err) => {
+    dead = true;
+    for (const { reject } of pending.values()) reject(err);
+    pending.clear();
+  };
 
   child.on("message", (msg) => {
     if (msg.requestId === undefined) return;
@@ -16,12 +23,35 @@ const createWorkerClient = (child) => {
     else entry.resolve(msg.result);
   });
 
-  const call = (method, args) =>
-    new Promise((resolve, reject) => {
+  // Once the ready-handshake has completed (this function is only called
+  // after that point), the child dying is no longer a startup failure for
+  // spawnAll to reject -- it's a runtime failure for THIS client. Without
+  // this, every in-flight call hangs forever (no reply is ever coming) and
+  // every future call would hang too, since child.send() on a dead/
+  // disconnected child never produces a reply either.
+  child.once("exit", (code, signal) => {
+    rejectAllPending(new Error(`Tenant worker process exited unexpectedly (code ${code}, signal ${signal})`));
+  });
+  child.once("disconnect", () => {
+    rejectAllPending(new Error("Tenant worker process disconnected unexpectedly"));
+  });
+  // The startup-phase "error" handler (in spawnAll) no-ops post-handshake by
+  // design; this is the post-handshake counterpart so a mid-operation IPC
+  // error still surfaces as a rejection instead of a silent hang.
+  child.on("error", (err) => {
+    rejectAllPending(new Error(`Tenant worker process error: ${err.message}`));
+  });
+
+  const call = (method, args) => {
+    if (dead || !child.connected || child.exitCode !== null || child.signalCode !== null) {
+      return Promise.reject(new Error("Tenant worker process exited unexpectedly"));
+    }
+    return new Promise((resolve, reject) => {
       const requestId = `${process.pid}-${++counter}-${Date.now()}`;
       pending.set(requestId, { resolve, reject });
       child.send({ requestId, method, args });
     });
+  };
 
   return {
     getAccounts: () => call("getAccounts", []),

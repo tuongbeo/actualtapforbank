@@ -36,4 +36,18 @@ process.once("message", async (config) => {
     const reply = await handleMessage(message);
     process.send(reply);
   });
+
+  // The parent's killAll() sends SIGTERM to tear this worker down (e.g. on
+  // server shutdown or restart). Without this handler the process dies
+  // immediately, leaking whatever Actual has open/buffered -- mirrors the
+  // onClose hook the deleted actualConnector.js plugin used to run.
+  process.on("SIGTERM", async () => {
+    try {
+      await actual.shutdown();
+      logger.info("Actual API shut down");
+    } catch (err) {
+      logger.error(`Cleanup error: ${err.message}`);
+    }
+    process.exit(0);
+  });
 });

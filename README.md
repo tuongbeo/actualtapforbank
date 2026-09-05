@@ -183,7 +183,9 @@ The tenant registry is a JSON array located at `config/tenants.json` (or the pat
 
 ### Per-Tenant Configuration Files
 
-Each tenant may have optional per-tenant configuration files in `config/tenants/<tenant-id>/`:
+Each tenant may have optional per-tenant configuration files in `config/tenants/<tenant-id>/`.
+
+**This path is always relative to wherever `TENANTS_CONFIG_PATH` itself points, not a fixed location.** With the default `TENANTS_CONFIG_PATH=config/tenants.json`, per-tenant files live under `config/tenants/<tenant-id>/` as shown below — but if you set `TENANTS_CONFIG_PATH=/secrets/tenants.json`, ActualTap looks for per-tenant files under `/secrets/tenants/<tenant-id>/` instead, since the tenant directory is derived from the directory containing the tenant registry file, not from a hardcoded `config/` prefix.
 
 - **`account-map.json`** — Maps bank account numbers to Actual Budget account names, used by `/vietqr-transaction` to route imported transactions. Same shape as the old `ACCOUNT_MAP` environment variable. Defaults to `{}` if missing.
 - **`templates.json`** — Bank-notification templates for `/vietqr-transaction` parsing. Same shape as the old `config/templates.json`. Defaults to `[]` (no templates) if missing. See [Template Configuration](#template-configuration) for schema details.

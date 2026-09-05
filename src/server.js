@@ -41,6 +41,17 @@ async function registerModules() {
   );
   fastify.log.info(`All ${tenants.length} tenant worker(s) ready`);
 
+  // Registered immediately once workers are up (rather than at the end of
+  // this function) so that if anything below this point throws -- a route
+  // registration failure, e.g. -- fastify.close() (called from start()'s
+  // catch block, or from the SIGTERM/SIGINT handlers below) still reaches
+  // this hook and tears down every already-spawned tenant worker. Without
+  // this, a failure partway through registerModules() would orphan them.
+  fastify.addHook("onClose", () => {
+    killAll();
+    fastify.log.info("All tenant workers shut down");
+  });
+
   const { buildTenantLookup, resolveTenant } = require("./lib/tenantAuth");
   const { tenantsByApiKey } = buildTenantLookup(tenants, workerClients);
 
@@ -65,11 +76,6 @@ async function registerModules() {
   await fastify.register(require("./routes/transaction"));
   await fastify.register(require("./routes/vietqrTransaction"));
   await fastify.register(require("./routes/health"));
-
-  fastify.addHook("onClose", () => {
-    killAll();
-    fastify.log.info("All tenant workers shut down");
-  });
 }
 
 // Global Error Handler
@@ -77,6 +83,25 @@ fastify.setErrorHandler((error, request, reply) => {
   fastify.log.error(error);
   reply.status(error.statusCode || 500).send({ error: error.message || "An error occurred" });
 });
+
+// Graceful shutdown: ensures fastify.close() runs (and with it the onClose
+// hook that calls killAll()) on a docker stop / Ctrl-C / systemd stop / PM2
+// restart, so tenant worker processes are never left running as orphans.
+let shuttingDown = false;
+const shutdown = async (signal) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  fastify.log.info(`Received ${signal}, shutting down`);
+  try {
+    await fastify.close();
+  } catch (err) {
+    fastify.log.error(`Error during shutdown: ${err.message}`);
+  }
+  process.exit(0);
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Start the server
 const start = async () => {
@@ -95,6 +120,16 @@ const start = async () => {
     }
   } catch (err) {
     fastify.log.error(err);
+    // Anything past this point in the try block may have already spawned
+    // tenant workers (registerModules() spawns them well before routes are
+    // registered or listen() is called) -- go through fastify.close() so the
+    // onClose hook's killAll() runs instead of leaking those processes via a
+    // bare process.exit(1).
+    try {
+      await fastify.close();
+    } catch (closeErr) {
+      fastify.log.error(`Error during shutdown after startup failure: ${closeErr.message}`);
+    }
     process.exit(1);
   }
 };
