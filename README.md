@@ -179,6 +179,7 @@ The tenant registry is a JSON array located at `config/tenants.json` (or the pat
 | `actualSyncId` | string | The Sync ID of this tenant's Actual Budget (found in Actual Settings → Show advanced settings → Sync ID) |
 | `actualPassword` | string | Password for the Actual Budget Server |
 | `actualEncryptionPassword` | string | _(optional)_ Encryption password if End-to-end encryption is enabled on the Actual Budget; defaults to empty string |
+| `keycloakSub` | string | _(optional)_ Keycloak subject identifier for SSO/admin-UI integration; defaults to `null` |
 
 ### Per-Tenant Configuration Files
 
@@ -543,32 +544,33 @@ actualtap.yourdomain.com {
 
 **Error: `ACTUAL_PASSWORD is incorrect (no budgets found)`**
 
-- **Cause:** The password provided is invalid
-- **Solution:** Verify `ACTUAL_PASSWORD` matches your Actual Budget server password
+- **Cause:** The password provided is invalid for the tenant's Actual Budget server
+- **Solution:** Verify the `actualPassword` value in the tenant's entry in `config/tenants.json` matches your Actual Budget server password
 
 **Error: `Authentication failed`**
 
 - **Cause:** Cannot authenticate with the provided credentials
 - **Solution:**
-  - Verify `ACTUAL_PASSWORD` is correct
+  - Verify the `actualPassword` value in `config/tenants.json` is correct
+  - Verify the `actualSyncId` in `config/tenants.json` matches a budget the server has access to
   - Check Actual Budget server logs for authentication issues
 
 #### Budget Errors
 
 **Error: `Budget '[id]' not found. Available: [list]`**
 
-- **Cause:** The specified `ACTUAL_SYNC_ID` does not exist
+- **Cause:** The specified `actualSyncId` in the tenant's config does not exist on the Actual Budget server
 - **Solution:**
   - Check the list of available budget IDs in the error message
-  - Update `ACTUAL_SYNC_ID` to use one of the available IDs
+  - Update the `actualSyncId` value in the tenant's entry in `config/tenants.json` to use one of the available IDs
   - You can find your budget's Sync ID in Actual Budget under Settings → Show advanced settings → Sync ID
 
 **Error: `ACTUAL_ENCRYPTION_PASSWORD is incorrect`**
 
 - **Cause:** The encryption password is wrong or the budget is not encrypted
 - **Solution:**
-  - If your budget uses end-to-end encryption, verify `ACTUAL_ENCRYPTION_PASSWORD` is correct
-  - If your budget is not encrypted, remove the `ACTUAL_ENCRYPTION_PASSWORD` environment variable
+  - If your budget uses end-to-end encryption, verify `actualEncryptionPassword` in the tenant's entry in `config/tenants.json` is correct
+  - If your budget is not encrypted, remove or omit the `actualEncryptionPassword` field from the tenant's config
 
 **Error: `Failed to download budget`**
 
@@ -590,7 +592,7 @@ actualtap.yourdomain.com {
 **Error: `401 Unauthorized`**
 
 - **Cause:** Missing or invalid API key
-- **Solution:** Ensure the `X-API-KEY` header matches the `API_KEY` environment variable
+- **Solution:** Ensure the `X-API-KEY` header matches the `apiKey` value for your tenant in `config/tenants.json`
 
 **Error: `Account '[name]' not found`**
 
