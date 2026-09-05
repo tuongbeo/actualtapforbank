@@ -44,7 +44,11 @@ async function registerModules() {
   });
   await fastify.register(require("./plugins/actualConnector"));
   await fastify.register(require("./routes/transaction"));
-  await fastify.register(require("./routes/vietqrTransaction"));
+
+  const { loadTemplates } = require("./templates");
+  const templates = loadTemplates(fastify.config.TEMPLATES_CONFIG_PATH);
+  await fastify.register(require("./routes/vietqrTransaction"), { templates });
+
   await fastify.register(require("./routes/health"));
 }
 
