@@ -9,25 +9,19 @@ const FIXTURE = fs.readFileSync(path.join(__dirname, "fixtures/bidv-expense.txt"
 const TEMPLATES = JSON.parse(fs.readFileSync(path.join(__dirname, "../config/templates.json"), "utf8"));
 
 async function buildMockServer({
-  accountMap = '{"8820966012":"BIDV Cash"}',
+  accountMapJson = '{"8820966012":"BIDV Cash"}',
   accounts = [{ id: "acc-1", name: "BIDV Cash" }],
   syncBehaviour = "success",
   templates = TEMPLATES,
+  tenantId = "test-tenant",
+  dedupCache = createDedupCache(),
 } = {}) {
   const app = fastify({ logger: false, ajv: { customOptions: { allowUnionTypes: true } } });
 
-  app.decorate("config", { API_KEY: "test-key", ACCOUNT_MAP: accountMap });
-
-  app.addHook("preHandler", async (request, reply) => {
-    if (request.url === "/health" || request.url.startsWith("/health?")) return;
-    const apiKey = request.headers["x-api-key"];
-    if (apiKey !== app.config.API_KEY) {
-      reply.code(401).send({ error: "Unauthorized" });
-    }
-  });
+  app.decorate("config", { API_KEY: "test-key" });
 
   const addedTransactions = [];
-  app.decorate("actual", {
+  const mockWorkerClient = {
     getAccounts: async () => accounts,
     addTransactions: async (accountId, transactions) => {
       addedTransactions.push({ accountId, transactions });
@@ -38,10 +32,21 @@ async function buildMockServer({
         throw new Error("PostError: unauthorized");
       }
     },
-  });
+  };
   app.decorate("addedTransactions", addedTransactions);
+  app.decorate("mockWorkerClient", mockWorkerClient);
 
-  await app.register(require("../src/routes/vietqrTransaction"), { dedupCache: createDedupCache(), templates });
+  app.addHook("preHandler", async (request, reply) => {
+    if (request.url === "/health" || request.url.startsWith("/health?")) return;
+    const apiKey = request.headers["x-api-key"];
+    if (apiKey !== app.config.API_KEY) {
+      reply.code(401).send({ error: "Unauthorized" });
+      return;
+    }
+    request.tenant = { id: tenantId, workerClient: mockWorkerClient, templates, accountMapJson };
+  });
+
+  await app.register(require("../src/routes/vietqrTransaction"), { dedupCache });
 
   return app;
 }
@@ -129,8 +134,8 @@ describe("POST /vietqr-transaction", () => {
     await app.close();
   });
 
-  it("returns 400 when the source account is not in ACCOUNT_MAP", async () => {
-    const app = await buildMockServer({ accountMap: "{}" });
+  it("returns 400 when the source account is not in this tenant's account map", async () => {
+    const app = await buildMockServer({ accountMapJson: "{}" });
     const response = await app.inject({
       method: "POST",
       url: "/vietqr-transaction",
@@ -163,6 +168,39 @@ describe("POST /vietqr-transaction", () => {
     assert.strictEqual(JSON.parse(second.body).duplicate, true);
     assert.strictEqual(app.addedTransactions.length, 1);
     await app.close();
+  });
+
+  it("does NOT treat two different tenants' identical reference codes as duplicates of each other", async () => {
+    const sharedDedupCache = createDedupCache();
+    const appAlice = await buildMockServer({ tenantId: "alice", dedupCache: sharedDedupCache });
+    const appBob = await buildMockServer({ tenantId: "bob", dedupCache: sharedDedupCache });
+
+    const aliceResponse = await appAlice.inject({
+      method: "POST",
+      url: "/vietqr-transaction",
+      headers: { "x-api-key": "test-key", "content-type": "application/json" },
+      payload: { rawText: FIXTURE },
+    });
+    assert.strictEqual(aliceResponse.statusCode, 200);
+    assert.strictEqual(JSON.parse(aliceResponse.body).duplicate, undefined);
+
+    const bobResponse = await appBob.inject({
+      method: "POST",
+      url: "/vietqr-transaction",
+      headers: { "x-api-key": "test-key", "content-type": "application/json" },
+      payload: { rawText: FIXTURE },
+    });
+    assert.strictEqual(bobResponse.statusCode, 200);
+    assert.strictEqual(
+      JSON.parse(bobResponse.body).duplicate,
+      undefined,
+      "bob's transaction (same reference code as alice's) must not be treated as a duplicate"
+    );
+
+    assert.strictEqual(appAlice.addedTransactions.length, 1);
+    assert.strictEqual(appBob.addedTransactions.length, 1);
+    await appAlice.close();
+    await appBob.close();
   });
 
   it("returns 500 when sync fails after the transaction is added", async () => {
@@ -203,7 +241,7 @@ describe("POST /vietqr-transaction", () => {
 
   it("does not poison the dedup cache when addTransaction fails", async () => {
     const app = await buildMockServer();
-    app.actual.addTransactions = async () => {
+    app.mockWorkerClient.addTransactions = async () => {
       throw new Error("Actual is down");
     };
 
@@ -216,7 +254,7 @@ describe("POST /vietqr-transaction", () => {
     assert.strictEqual(first.statusCode, 500);
     assert.strictEqual(app.addedTransactions.length, 0);
 
-    app.actual.addTransactions = async (accountId, transactions) => {
+    app.mockWorkerClient.addTransactions = async (accountId, transactions) => {
       app.addedTransactions.push({ accountId, transactions });
       return "ok";
     };
