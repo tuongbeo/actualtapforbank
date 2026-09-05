@@ -10,6 +10,11 @@ const fastifyCors = require("@fastify/cors");
 
 const { buildTenantLookup, resolveTenant } = require("../src/lib/tenantAuth");
 const { createDedupCache } = require("../src/lib/dedupCache");
+const { loadTenants } = require("../src/lib/tenantRegistry");
+const { spawnAll } = require("../src/worker/tenantWorkerPool");
+const { createTenantProvisioner } = require("../src/lib/tenantProvisioning");
+
+const FAKE_WORKER_PATH = path.join(__dirname, "fixtures/fakeTenantWorker.js");
 
 const SESSION_SECRET = "a".repeat(32);
 const APP_BASE_URL = "http://actualtap.example.com"; // http on purpose: this test doesn't exercise
@@ -130,6 +135,77 @@ async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
   await app.register(require("../src/routes/bankTransfer"), { dedupCache: createDedupCache() });
 
   return { app, templatesPath };
+}
+
+// A second, separate app builder for the zero-tenant-boot + self-registration scenario --
+// deliberately independent of buildApp() above. Mirrors server.js's real Task 10 wiring:
+// loadTenants() from a real tenants.json, spawnAll()/spawnOne() against the real
+// fakeTenantWorker.js fixture, and the real tenantProvisioner wired into adminRegister.
+async function buildFreshApp({ oidcClient = fakeOidcClient({ sub: "sub-new-user" }) } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "admin-full-chain-fresh-"));
+  const tenantsConfigPath = path.join(dir, "tenants.json");
+  fs.writeFileSync(tenantsConfigPath, "[]");
+
+  const app = fastify({
+    logger: false,
+    ajv: { customOptions: { allowUnionTypes: true } },
+    routerOptions: { ignoreTrailingSlash: true },
+    trustProxy: true,
+  });
+
+  app.decorate("config", {
+    ACTUAL_URL: "http://actual.example.com",
+    TENANTS_CONFIG_PATH: tenantsConfigPath,
+    KEYCLOAK_ISSUER_URL: "https://keycloak.example.com/realms/actual",
+    KEYCLOAK_CLIENT_ID: "actualtap-admin",
+    KEYCLOAK_CLIENT_SECRET: "secret",
+    SESSION_SECRET,
+    APP_BASE_URL,
+  });
+
+  const tenants = loadTenants(tenantsConfigPath); // [] -- nobody registered yet
+  const { clients: workerClients, children } = await spawnAll([], FAKE_WORKER_PATH);
+  const { tenantsById, tenantsByApiKey, tenantsByKeycloakSub } = buildTenantLookup(tenants, workerClients);
+
+  app.addHook("preHandler", async (request, reply) => {
+    if (request.url === "/health" || request.url.startsWith("/health?") || request.url.startsWith("/admin")) {
+      return;
+    }
+    const apiKey = request.headers["x-api-key"];
+    const tenant = resolveTenant(tenantsByApiKey, apiKey);
+    if (!tenant) {
+      reply.code(401).send({ error: "Unauthorized" });
+      return;
+    }
+    request.tenant = tenant;
+  });
+
+  await app.register(fastifyCookie);
+  await app.register(fastifySession, {
+    secret: SESSION_SECRET,
+    saveUninitialized: false,
+    cookie: { secure: APP_BASE_URL.startsWith("https://"), path: "/admin", sameSite: "lax" },
+  });
+  await app.register(require("../src/plugins/auth"), { oidcClient, tenantsByKeycloakSub });
+  await app.register(require("../src/plugins/staticAdmin"));
+  await app.register(require("../src/routes/adminTemplates"));
+  await app.register(require("../src/routes/adminAccountMap"));
+
+  const { registerTenant } = createTenantProvisioner({
+    tenantsConfigPath,
+    actualUrl: "http://actual.example.com",
+    workerPath: FAKE_WORKER_PATH,
+    tenantsById,
+    tenantsByApiKey,
+    tenantsByKeycloakSub,
+    onWorkerSpawned: (child) => children.push(child),
+  });
+  await app.register(require("../src/routes/adminRegister"), { registerTenant });
+
+  await app.register(fastifyCors, { methods: ["POST"] });
+  await app.register(require("../src/routes/bankTransfer"), { dedupCache: createDedupCache() });
+
+  return { app, children };
 }
 
 describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /bank-transfer)", () => {
@@ -325,6 +401,50 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /ba
       assert.notStrictEqual(postAuthCookie.value, preAuthCookie.value, "session ID must change after login");
     }
 
+    await app.close();
+  });
+});
+
+describe("Zero-tenant boot + self-service registration", () => {
+  it("lets a fresh deployment's first user self-register and immediately use /bank-transfer", async () => {
+    const oidcClient = fakeOidcClient({ sub: "sub-new-user" });
+    const { app, children } = await buildFreshApp({ oidcClient });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const meBefore = await app.inject({ method: "GET", url: "/admin/api/me", headers: { cookie } });
+    assert.deepStrictEqual(JSON.parse(meBefore.body), { registered: false });
+
+    const registerResponse = await app.inject({
+      method: "POST",
+      url: "/admin/api/register",
+      headers: { cookie },
+      payload: { actualSyncId: "sync-new", actualPassword: "pw" },
+    });
+    assert.strictEqual(registerResponse.statusCode, 201);
+    const { apiKey } = JSON.parse(registerResponse.body);
+
+    const meAfter = await app.inject({ method: "GET", url: "/admin/api/me", headers: { cookie } });
+    assert.deepStrictEqual(JSON.parse(meAfter.body), { registered: true });
+
+    // Immediately usable on the data plane, same running server, no restart
+    const bankTransferResponse = await app.inject({
+      method: "POST",
+      url: "/bank-transfer",
+      headers: { "x-api-key": apiKey },
+      payload: { rawText: "no template will match this -- proves auth succeeded, not that parsing did" },
+    });
+    assert.notStrictEqual(bankTransferResponse.statusCode, 401);
+
+    for (const child of children) child.kill();
     await app.close();
   });
 });
