@@ -317,7 +317,13 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /ba
     const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
     const setCookieHeader = loginResponse.headers["set-cookie"];
     assert.ok(setCookieHeader, "expected /admin/login to set a session cookie");
-    const setCookie = Array.isArray(setCookieHeader) ? setCookieHeader.join("; ") : setCookieHeader;
+    const setCookieList = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+    // Exactly one sessionId cookie -- a second, stray one scoped to the unprefixed internal path
+    // would leak this app's session token onto a path it does not own on the shared external
+    // origin (the rewrite must REPLACE the internal-path cookie, never ship both).
+    const sessionCookies = setCookieList.filter((c) => c.startsWith("sessionId="));
+    assert.strictEqual(sessionCookies.length, 1, `expected exactly one sessionId cookie, got: ${setCookieList.join(" | ")}`);
+    const setCookie = sessionCookies[0];
     assert.ok(
       new RegExp(`Path=${PREFIX}/admin`, "i").test(setCookie),
       `expected the cookie Path to include the deployment prefix, got: ${setCookie}`
@@ -358,7 +364,14 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /ba
     assert.strictEqual(callbackResponse.statusCode, 302, `callback failed: ${callbackResponse.body}`);
     assert.strictEqual(callbackResponse.headers.location, `${PREFIX}/admin/`);
     const postAuthSetCookie = callbackResponse.headers["set-cookie"];
-    const postAuthCookieHeader = Array.isArray(postAuthSetCookie) ? postAuthSetCookie.join("; ") : postAuthSetCookie;
+    const postAuthCookieList = Array.isArray(postAuthSetCookie) ? postAuthSetCookie : [postAuthSetCookie];
+    const postAuthSessionCookies = postAuthCookieList.filter((c) => c.startsWith("sessionId="));
+    assert.strictEqual(
+      postAuthSessionCookies.length,
+      1,
+      `expected exactly one post-login sessionId cookie (no stray internal-path duplicate), got: ${postAuthCookieList.join(" | ")}`
+    );
+    const postAuthCookieHeader = postAuthSessionCookies[0];
     assert.ok(
       new RegExp(`Path=${PREFIX}/admin`, "i").test(postAuthCookieHeader),
       `post-login cookie must stay prefixed, got: ${postAuthCookieHeader}`

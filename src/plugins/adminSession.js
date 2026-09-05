@@ -64,7 +64,17 @@ module.exports = fp(async (fastify, opts) => {
       return cookie.replace(INTERNAL_PATH_ATTR, `; Path=${externalPath}`);
     });
 
-    if (rewrote) reply.header("set-cookie", next);
+    if (rewrote) {
+      // reply.header("set-cookie", ...) APPENDS rather than replaces -- Fastify special-cases
+      // set-cookie as an array-accumulating header (see fastify/lib/reply.js) since a response
+      // can legitimately set multiple distinct cookies. Without removeHeader() first, the
+      // rewritten cookie would ship ALONGSIDE the original internal-path one instead of instead
+      // of it, leaking this app's live session token onto "<INTERNAL_COOKIE_PATH>" on the
+      // browser-facing origin -- a path this app does not own under the documented path-prefix
+      // deployment (the whole point of that deployment is sharing a domain with other apps).
+      reply.removeHeader("set-cookie");
+      reply.header("set-cookie", next);
+    }
   });
 });
 
