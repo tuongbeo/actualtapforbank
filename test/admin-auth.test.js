@@ -201,10 +201,34 @@ describe("admin guard preHandler", () => {
 
 describe("POST /admin/logout", () => {
   it("destroys the session and redirects to /admin/login when no end-session endpoint exists", async () => {
-    const app = await buildApp();
-    const response = await app.inject({ method: "POST", url: "/admin/logout" });
+    const oidcClient = fakeOidcClient({ sub: "sub-alice" });
+    const tenantsByKeycloakSub = new Map([["sub-alice", { id: "alice", templatesStore: {} }]]);
+    const app = await buildApp({ oidcClient, tenantsByKeycloakSub });
+
+    const loginResponse = await app.inject({ method: "GET", url: "/admin/login" });
+    let cookie = loginResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const state = oidcClient.calls.authorizationUrl[0].state;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/admin/callback?code=good-code&state=${state}`,
+      headers: { cookie },
+    });
+    cookie = callbackResponse.cookies.map((c) => `${c.name}=${c.value}`).join("; ") || cookie;
+
+    const response = await app.inject({ method: "POST", url: "/admin/logout", headers: { cookie } });
     assert.strictEqual(response.statusCode, 302);
     assert.strictEqual(response.headers.location, "/admin/login");
+    await app.close();
+  });
+
+  // As of the guard's fix for the /admin/api/preview unauthenticated-DoS finding, an
+  // unauthenticated non-GET /admin/* request (logout included) is now rejected with 401 by the
+  // guard before any route handler runs, instead of silently reaching the logout handler.
+  it("returns 401 for an unauthenticated request instead of reaching the handler", async () => {
+    const app = await buildApp();
+    const response = await app.inject({ method: "POST", url: "/admin/logout" });
+    assert.strictEqual(response.statusCode, 401);
     await app.close();
   });
 });

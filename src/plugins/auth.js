@@ -35,12 +35,33 @@ module.exports = fp(async (fastify, opts) => {
 
   const { tenantsByKeycloakSub } = opts;
 
+  // Only accept a same-origin relative path (e.g. "/admin/foo"); reject anything that could
+  // send the browser off-site after login: protocol-relative ("//evil.example.com/"), an
+  // absolute URL ("https://evil.example.com/" -- contains "://"), or a non-string/empty value.
+  const sanitizeReturnTo = (value) => {
+    if (
+      typeof value === "string" &&
+      value.startsWith("/") &&
+      !value.startsWith("//") &&
+      !value.includes("://")
+    ) {
+      return value;
+    }
+    return "/admin/";
+  };
+
   fastify.addHook("preHandler", async (request, reply) => {
     if (!request.url.startsWith("/admin")) return;
     if (request.url.startsWith("/admin/login") || request.url.startsWith("/admin/callback")) return;
 
     if (!request.session.userSub) {
-      if (request.method !== "GET") return; // only redirect GET requests to login, per spec
+      if (request.method !== "GET") {
+        // Only redirect GET requests to login, per spec -- but a non-GET request must still
+        // never reach a route handler unauthenticated (an unauthenticated, unguarded route
+        // like /admin/api/preview would otherwise be fully reachable by anyone).
+        reply.code(401).send({ error: "Unauthorized" });
+        return;
+      }
       const returnTo = encodeURIComponent(request.url);
       reply.redirect(`/admin/login?returnTo=${returnTo}`);
       return;
@@ -62,7 +83,7 @@ module.exports = fp(async (fastify, opts) => {
     const state = generators.state();
     request.session.codeVerifier = codeVerifier;
     request.session.oauthState = state;
-    request.session.returnTo = request.query.returnTo || "/admin/";
+    request.session.returnTo = sanitizeReturnTo(request.query.returnTo);
 
     const url = oidcClient.authorizationUrl({
       scope: "openid profile email",
@@ -93,13 +114,20 @@ module.exports = fp(async (fastify, opts) => {
     }
 
     const claims = tokenSet.claims();
+    // Captured before regenerate() below replaces request.session with a fresh (empty)
+    // instance, which would otherwise wipe this along with the PKCE fields.
+    const returnTo = request.session.returnTo || "/admin/";
+
+    // Regenerate the session (fresh session ID) before writing authenticated state onto it,
+    // rather than reusing the pre-auth session that /admin/login created -- prevents session
+    // fixation. Fields are set on request.session AFTER regenerate(), since regenerate()
+    // replaces request.session with a new (empty) Session instance (which also takes care of
+    // codeVerifier/oauthState/returnTo -- they're simply never copied onto the new session).
+    await request.session.regenerate();
+
     request.session.userSub = claims.sub;
     request.session.userLabel = claims.preferred_username || claims.email || claims.sub;
-    delete request.session.codeVerifier;
-    delete request.session.oauthState;
 
-    const returnTo = request.session.returnTo || "/admin/";
-    delete request.session.returnTo;
     reply.redirect(returnTo);
   });
 

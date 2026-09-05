@@ -19,6 +19,12 @@ const fastify = require("fastify")({
     ignoreTrailingSlash: true,
   },
   pluginTimeout: 120000, // 120 seconds to match Actual API initialization timeout and retries
+  // This app never terminates TLS itself -- an `https://` APP_BASE_URL (per the README's
+  // documented deployment) implies a reverse proxy in front of it that sets
+  // X-Forwarded-Proto. Without trustProxy, request.protocol is always "http", which makes
+  // @fastify/session's cookie.secure=true check refuse to ever issue a Set-Cookie behind
+  // such a proxy, breaking every admin login ("Invalid state" on /admin/callback).
+  trustProxy: true,
 });
 const { version } = require("../package.json");
 
@@ -77,7 +83,13 @@ async function registerModules() {
     await fastify.register(require("@fastify/cookie"));
     await fastify.register(require("@fastify/session"), {
       secret: adminUiConfig.sessionSecret,
-      cookie: { secure: adminUiConfig.appBaseUrl.startsWith("https://") },
+      // saveUninitialized: false + cookie.path "/admin" scope session handling to the admin
+      // UI only. @fastify/session's hooks otherwise run for EVERY request (this plugin is
+      // registered globally), so without this every /health, /transaction, /vietqr-transaction
+      // request would leak an unbounded, no-TTL in-memory session and set an unrelated
+      // Set-Cookie header.
+      saveUninitialized: false,
+      cookie: { secure: adminUiConfig.appBaseUrl.startsWith("https://"), path: "/admin", sameSite: "lax" },
     });
     await fastify.register(require("./plugins/auth"), { tenantsByKeycloakSub });
     await fastify.register(require("./plugins/staticAdmin"));
