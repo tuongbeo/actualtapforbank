@@ -4,13 +4,12 @@ const { buildServer, cleanupTransactions, getFirstAccount } = require("./helpers
 
 describe("Transaction API", () => {
   let app;
-  let workerClient;
   let testAccount;
   const createdTransactionIds = [];
 
   before(async () => {
-    ({ app, workerClient } = await buildServer());
-    testAccount = await getFirstAccount(workerClient);
+    app = await buildServer();
+    testAccount = await getFirstAccount(app.actual);
   });
 
   after(async () => {
@@ -19,11 +18,11 @@ describe("Transaction API", () => {
 
     // Cleanup all created transactions
     if (createdTransactionIds.length > 0) {
-      await cleanupTransactions(workerClient, testAccount.id, createdTransactionIds);
+      await cleanupTransactions(app.actual, testAccount.id, createdTransactionIds);
       console.log(`Cleaned up ${createdTransactionIds.length} test transaction(s)`);
     }
 
-    // app.close() shuts down the tenant worker via the onClose hook in test/helpers.js
+    // app.close() shuts down the Actual API via the connector's onClose hook
     await app.close();
   });
 

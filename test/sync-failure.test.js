@@ -3,10 +3,8 @@ const assert = require("node:assert");
 const fastify = require("fastify");
 
 /**
- * Build a server with a mocked tenant worker client to test sync failure
- * handling without needing a real Actual Budget server. In production,
- * request.tenant is populated by the per-tenant auth hook (Task 9); here
- * a test-local preHandler injects it directly.
+ * Build a server with a mocked Actual API to test sync failure handling
+ * without needing a real Actual Budget server.
  */
 async function buildMockServer({ syncBehaviour = "success", nearbyPayees = [] } = {}) {
   const app = fastify({ logger: false, ajv: { customOptions: { allowUnionTypes: true } } });
@@ -14,8 +12,17 @@ async function buildMockServer({ syncBehaviour = "success", nearbyPayees = [] } 
   // Minimal env config
   app.decorate("config", { API_KEY: "test-key" });
 
-  const locationRequests = [];
-  const mockWorkerClient = {
+  // Auth hook
+  app.addHook("preHandler", async (request, reply) => {
+    if (request.url === "/health" || request.url.startsWith("/health?")) return;
+    const apiKey = request.headers["x-api-key"];
+    if (apiKey !== app.config.API_KEY) {
+      reply.code(401).send({ error: "Unauthorized" });
+    }
+  });
+
+  // Mock Actual API
+  app.decorate("actual", {
     getAccounts: async () => [{ id: "acc-1", name: "Checking" }],
     getPayees: async () => [{ id: "payee-1", name: "Test" }],
     addTransactions: async () => "ok",
@@ -24,23 +31,15 @@ async function buildMockServer({ syncBehaviour = "success", nearbyPayees = [] } 
         throw new Error("PostError: unauthorized");
       }
     },
-    actualInternalSend: async (name, args) => {
+  });
+  const locationRequests = [];
+  app.decorate("actualInternal", {
+    send: async (name, args) => {
       locationRequests.push({ name, args });
       return name === "api/payees-get-nearby" ? nearbyPayees : undefined;
     },
-  };
-  app.decorate("locationRequests", locationRequests);
-
-  // Auth hook (test stand-in for Task 9's per-tenant auth hook)
-  app.addHook("preHandler", async (request, reply) => {
-    if (request.url === "/health" || request.url.startsWith("/health?")) return;
-    const apiKey = request.headers["x-api-key"];
-    if (apiKey !== app.config.API_KEY) {
-      reply.code(401).send({ error: "Unauthorized" });
-      return;
-    }
-    request.tenant = { id: "test-tenant", workerClient: mockWorkerClient };
   });
+  app.decorate("locationRequests", locationRequests);
 
   await app.register(require("../src/routes/transaction"));
 

@@ -1,29 +1,45 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fastify = require("fastify");
 const actual = require("@actual-app/api");
-const { connectToActual } = require("../src/lib/actualConnectorInit");
 
-const logger = { info: () => {}, warn: () => {}, error: () => {} };
+/**
+ * Build server with custom env overrides for testing initialization failures.
+ */
+async function buildServerWithEnv(envOverrides) {
+  const app = fastify({ logger: false, ajv: { customOptions: { allowUnionTypes: true } } });
 
-async function connectWithOverrides(overrides) {
+  // Custom env plugin with overrides
+  const originalEnv = { ...process.env };
+  Object.assign(process.env, envOverrides);
+
   try {
-    await connectToActual({
-      actualUrl: process.env.ACTUAL_URL,
-      password: process.env.ACTUAL_PASSWORD,
-      syncId: process.env.ACTUAL_SYNC_ID,
-      encryptionPassword: process.env.ACTUAL_ENCRYPTION_PASSWORD,
-      logger,
-      ...overrides,
-    });
+    await app.register(require("../src/plugins/env"));
+    await app.register(require("../src/plugins/actualConnector"));
   } finally {
+    // Restore original env
+    Object.keys(envOverrides).forEach((key) => {
+      if (originalEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = originalEnv[key];
+      }
+    });
+    // Close Actual API to prevent leaked handles from failed init attempts
     try { await actual.shutdown(); } catch {}
   }
+
+  return app;
 }
 
 describe("Initialization failures", () => {
   it("should fail with invalid ACTUAL_URL", async () => {
     await assert.rejects(
-      () => connectWithOverrides({ actualUrl: "not-a-valid-url" }),
+      async () => {
+        await buildServerWithEnv({
+          ACTUAL_URL: "not-a-valid-url",
+        });
+      },
       (err) => {
         assert.ok(
           err.message.includes("Invalid ACTUAL_URL") || err.message.includes("URL"),
@@ -36,7 +52,11 @@ describe("Initialization failures", () => {
 
   it("should fail with wrong ACTUAL_PASSWORD", async () => {
     await assert.rejects(
-      () => connectWithOverrides({ password: "definitely-wrong-password-12345" }),
+      async () => {
+        await buildServerWithEnv({
+          ACTUAL_PASSWORD: "definitely-wrong-password-12345",
+        });
+      },
       (err) => {
         assert.ok(
           err.message.includes("password") ||
@@ -51,8 +71,13 @@ describe("Initialization failures", () => {
 
   it("should fail with invalid ACTUAL_SYNC_ID", async () => {
     await assert.rejects(
-      () => connectWithOverrides({ syncId: "00000000-0000-0000-0000-000000000000" }),
+      async () => {
+        await buildServerWithEnv({
+          ACTUAL_SYNC_ID: "00000000-0000-0000-0000-000000000000",
+        });
+      },
       (err) => {
+        // May get "Budget 'x' not found" or auth error with "no budgets found"
         assert.ok(
           err.message.includes("not found") ||
           err.message.includes("Budget") ||
