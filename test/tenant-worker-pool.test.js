@@ -1,7 +1,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const path = require("node:path");
-const { spawnAll } = require("../src/worker/tenantWorkerPool");
+const { spawnAll, spawnOne } = require("../src/worker/tenantWorkerPool");
 
 const FAKE_WORKER_PATH = path.join(__dirname, "fixtures/fakeTenantWorker.js");
 
@@ -79,5 +79,43 @@ describe("spawnAll", () => {
         ),
       /failed to spawn/i
     );
+  });
+
+  it("exposes every spawned child on the resolved object", async () => {
+    const { children, killAll } = await spawnAll(
+      [
+        { id: "alice", tenantId: "alice" },
+        { id: "bob", tenantId: "bob" },
+      ],
+      FAKE_WORKER_PATH
+    );
+    assert.strictEqual(children.length, 2);
+    killAll();
+  });
+});
+
+describe("spawnOne", () => {
+  it("resolves { child, client } for a healthy tenant", async () => {
+    const { child, client } = await spawnOne({ id: "alice", tenantId: "alice" }, FAKE_WORKER_PATH);
+    const accounts = await client.getAccounts();
+    assert.deepStrictEqual(accounts, [{ id: "acc-alice", name: "Fake" }]);
+    child.kill();
+  });
+
+  it("rejects and kills its own child when the tenant fails to initialize", async () => {
+    await assert.rejects(
+      () => spawnOne({ id: "bob", tenantId: "bob", failInit: true }, FAKE_WORKER_PATH),
+      /bob.*failed to initialize/i
+    );
+  });
+
+  it("calls onSpawn with the child as soon as it is forked, before ready/failure is known", async () => {
+    const spawnedChildren = [];
+    const { child } = await spawnOne({ id: "alice", tenantId: "alice" }, FAKE_WORKER_PATH, {}, {
+      onSpawn: (c) => spawnedChildren.push(c),
+    });
+    assert.strictEqual(spawnedChildren.length, 1);
+    assert.strictEqual(spawnedChildren[0], child);
+    child.kill();
   });
 });
