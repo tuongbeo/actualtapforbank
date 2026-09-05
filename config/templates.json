@@ -1,0 +1,20 @@
+[
+  {
+    "name": "bidv-expense",
+    "sourceType": "email",
+    "direction": "expense",
+    "match": {
+      "contains": ["BIDV", "Số tham chiếu", "Số tiền giao dịch", "Tài khoản nguồn"]
+    },
+    "fields": {
+      "referenceCode": { "label": ["Số tham chiếu:", "Reference number:"], "stopLabel": "Tài khoản nguồn:" },
+      "sourceAccountNumber": { "label": ["Tài khoản nguồn:", "Debit account:"], "stopLabel": "Số tiền giao dịch:" },
+      "amount": { "label": ["Số tiền giao dịch:", "Transaction amount:"], "type": "amount", "stopLabel": "Phí giao dịch:" },
+      "transactionDate": { "label": ["Thời gian giao dịch:", "Transaction time:"], "type": "date", "format": "DD/MM/YYYY HH:mm:ss", "stopLabel": "Số tham chiếu:" },
+      "counterpartyName": { "label": ["Tên người thụ hưởng:", "Beneficiary name:"], "stopLabel": "Số tài khoản" },
+      "description": { "label": ["Nội dung giao dịch:", "Transaction remark:"], "stopLabel": "Kênh thực hiện giao dịch:" }
+    },
+    "requiredFields": ["referenceCode", "amount", "transactionDate", "sourceAccountNumber", "counterpartyName", "description"],
+    "descriptionSuffix": "Ref: {referenceCode}"
+  }
+]
