@@ -23,6 +23,15 @@ describe("loadTenants", () => {
     assert.strictEqual(alice.templates[0].name, "test-template");
   });
 
+  it("returns each tenant's resolved templatesPath", () => {
+    const tenants = loadTenants(FIXTURE_VALID);
+    const [alice] = tenants;
+    assert.strictEqual(
+      alice.templatesPath,
+      path.join(path.dirname(FIXTURE_VALID), "tenants", "alice", "templates.json")
+    );
+  });
+
   it("throws listing every problem when required fields are missing", () => {
     assert.throws(() => loadTenants(FIXTURE_INVALID), /"apiKey" is required/);
   });

@@ -81,6 +81,7 @@ const loadTenants = (tenantsConfigPath) => {
       keycloakSub: raw.keycloakSub || null,
       accountMapJson,
       templates,
+      templatesPath,
     };
   });
 
