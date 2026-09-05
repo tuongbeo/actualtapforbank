@@ -1,4 +1,5 @@
 const { createTemplatesStore } = require("../templates/store");
+const { createAccountMapStore } = require("./accountMapStore");
 
 const buildTenantLookup = (tenants, workerClients) => {
   const tenantsById = new Map();
@@ -9,7 +10,7 @@ const buildTenantLookup = (tenants, workerClients) => {
       id: t.id,
       workerClient: workerClients.get(t.id),
       templatesStore: createTemplatesStore(t.templatesPath, t.templates),
-      accountMapJson: t.accountMapJson,
+      accountMapStore: createAccountMapStore(t.accountMapPath, t.accountMapJson),
       keycloakSub: t.keycloakSub,
     };
     tenantsById.set(t.id, tenant);
