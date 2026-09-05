@@ -109,6 +109,32 @@ describe("spawnOne", () => {
     );
   });
 
+  // Spec §12: a spawnOne failure must never touch another tenant's already-running worker.
+  // This is what makes dynamic self-service registration safe on a live server: a stranger's
+  // bad credentials cannot disturb an existing tenant's process (unlike spawnAll, which is
+  // deliberately all-or-nothing and kills the whole batch).
+  it("a failing spawnOne never touches another tenant's already-running worker", async () => {
+    // Two INDEPENDENT spawnOne calls, not one spawnAll batch.
+    const { child: aliceChild, client: aliceClient } = await spawnOne(
+      { id: "alice", tenantId: "alice" },
+      FAKE_WORKER_PATH
+    );
+    assert.deepStrictEqual(await aliceClient.getAccounts(), [{ id: "acc-alice", name: "Fake" }]);
+
+    await assert.rejects(
+      () => spawnOne({ id: "bob", tenantId: "bob", failInit: true }, FAKE_WORKER_PATH),
+      /bob.*failed to initialize/i
+    );
+
+    // Alice's worker is still alive and still answering real calls.
+    assert.strictEqual(aliceChild.exitCode, null);
+    assert.strictEqual(aliceChild.signalCode, null);
+    assert.strictEqual(aliceChild.connected, true);
+    assert.deepStrictEqual(await aliceClient.getAccounts(), [{ id: "acc-alice", name: "Fake" }]);
+
+    aliceChild.kill();
+  });
+
   it("calls onSpawn with the child as soon as it is forked, before ready/failure is known", async () => {
     const spawnedChildren = [];
     const { child } = await spawnOne({ id: "alice", tenantId: "alice" }, FAKE_WORKER_PATH, {}, {
