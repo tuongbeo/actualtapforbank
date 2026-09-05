@@ -60,6 +60,13 @@ module.exports = async (fastify, opts) => {
       });
     }
 
+    if (typeof parsed.amount !== "number" || !Number.isFinite(parsed.amount)) {
+      return reply.code(422).send({
+        error: "Failed to parse transaction",
+        message: `Could not parse a numeric amount (got "${parsed.amount}")`,
+      });
+    }
+
     const accountName = resolveAccountName(parsed.sourceAccountNumber, fastify.config.ACCOUNT_MAP);
     if (!accountName) {
       return reply.code(400).send({

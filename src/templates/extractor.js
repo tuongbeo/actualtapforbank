@@ -6,16 +6,22 @@ const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const labelsOf = (field) => (Array.isArray(field.label) ? field.label : [field.label]);
 
 const extractRawValue = (normalizedText, field) => {
+  let rawValue;
+
   if (field.regex) {
     const regex = new RegExp(field.regex);
     const match = regex.exec(normalizedText);
-    return match?.groups?.value;
+    rawValue = match?.groups?.value;
+  } else {
+    // No end-of-string fallback: a declared stopLabel that isn't present in this
+    // message must fail extraction loudly rather than swallow trailing text.
+    const prefixPattern = labelsOf(field).map(escapeRegex).join("\\s*");
+    const pattern = `${prefixPattern}\\s*(.+?)\\s*(?=${escapeRegex(field.stopLabel)})`;
+    const match = new RegExp(pattern, "i").exec(normalizedText);
+    rawValue = match?.[1]?.trim();
   }
 
-  const prefixPattern = labelsOf(field).map(escapeRegex).join("\\s*");
-  const pattern = `${prefixPattern}\\s*(.+?)\\s*(?=${escapeRegex(field.stopLabel)}|$)`;
-  const match = new RegExp(pattern, "i").exec(normalizedText);
-  return match?.[1]?.trim();
+  return rawValue === "" ? undefined : rawValue;
 };
 
 const applyType = (rawValue, field) => {
