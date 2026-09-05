@@ -75,7 +75,7 @@ test/admin-hot-reload-integration.test.js  // NEW — the "no restart required" 
 
 **Interfaces:**
 - Consumes: `validateTemplates` (`../templates/schema`, already merged)
-- Produces: `createTemplatesStore(configPath: string, initialTemplates: Array) => { getTemplates(): Array, replaceAll(newTemplates: Array): void }`. `replaceAll` throws (and touches neither the file nor the in-memory array) if `validateTemplates(newTemplates)` fails; otherwise it writes `configPath` (pretty-printed JSON) and then updates the in-memory array.
+- Produces: `createTemplatesStore(configPath: string, initialTemplates: Array) => { getTemplates(): Array, replaceAll(newTemplates: Array): void }`. `replaceAll` throws (and touches neither the file nor the in-memory array) if `validateTemplates(newTemplates)` fails; otherwise it creates `configPath`'s parent directory if missing (a tenant with no prior `templates.json` also has no `config/tenants/<id>/` directory yet — both per-tenant files are individually optional), writes `configPath` (pretty-printed JSON), and then updates the in-memory array.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -146,6 +146,17 @@ describe("createTemplatesStore", () => {
     assert.throws(() => store.replaceAll([VALID_TEMPLATE, duplicate]), /name/i);
     assert.deepStrictEqual(store.getTemplates(), [VALID_TEMPLATE]);
   });
+
+  it("replaceAll() creates the parent directory when it doesn't exist yet (a tenant with no prior templates.json)", () => {
+    const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "templates-store-nofile-"));
+    const nestedConfigPath = path.join(parentDir, "tenants", "brand-new-tenant", "templates.json");
+    const store = createTemplatesStore(nestedConfigPath, []); // the "tenants/brand-new-tenant/" dir doesn't exist yet
+
+    store.replaceAll([VALID_TEMPLATE]);
+
+    assert.deepStrictEqual(store.getTemplates(), [VALID_TEMPLATE]);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(nestedConfigPath, "utf8")), [VALID_TEMPLATE]);
+  });
 });
 ```
 
@@ -160,6 +171,7 @@ Create `src/templates/store.js`:
 
 ```js
 const fs = require("node:fs");
+const path = require("node:path");
 const { validateTemplates } = require("./schema");
 
 const createTemplatesStore = (configPath, initialTemplates) => {
@@ -169,6 +181,9 @@ const createTemplatesStore = (configPath, initialTemplates) => {
 
   const replaceAll = (newTemplates) => {
     validateTemplates(newTemplates); // throws on failure, leaving `templates` untouched
+    fs.mkdirSync(path.dirname(configPath), { recursive: true }); // a tenant whose templates.json
+      // never existed also never had its config/tenants/<id>/ directory created — both per-tenant
+      // files are individually optional, so this directory may not exist yet on this store's first write
     fs.writeFileSync(configPath, JSON.stringify(newTemplates, null, 2));
     templates = newTemplates;
   };
@@ -182,7 +197,7 @@ module.exports = { createTemplatesStore };
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `node --test test/templates-store.test.js`
-Expected: PASS (4 tests)
+Expected: PASS (5 tests)
 
 - [ ] **Step 5: Commit**
 
