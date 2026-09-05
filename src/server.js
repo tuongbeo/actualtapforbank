@@ -53,10 +53,10 @@ async function registerModules() {
   });
 
   const { buildTenantLookup, resolveTenant } = require("./lib/tenantAuth");
-  const { tenantsByApiKey } = buildTenantLookup(tenants, workerClients);
+  const { tenantsByApiKey, tenantsByKeycloakSub } = buildTenantLookup(tenants, workerClients);
 
   fastify.addHook("preHandler", async (request, reply) => {
-    if (request.url === "/health" || request.url.startsWith("/health?")) {
+    if (request.url === "/health" || request.url.startsWith("/health?") || request.url.startsWith("/admin")) {
       return;
     }
 
@@ -68,6 +68,23 @@ async function registerModules() {
     }
     request.tenant = tenant;
   });
+
+  const { resolveAdminUiConfig } = require("./lib/adminFeatureFlag");
+  const adminUiConfig = resolveAdminUiConfig(fastify.config);
+
+  if (adminUiConfig.enabled) {
+    fastify.log.info("Admin UI enabled");
+    await fastify.register(require("@fastify/cookie"));
+    await fastify.register(require("@fastify/session"), {
+      secret: adminUiConfig.sessionSecret,
+      cookie: { secure: adminUiConfig.appBaseUrl.startsWith("https://") },
+    });
+    await fastify.register(require("./plugins/auth"), { tenantsByKeycloakSub });
+    await fastify.register(require("./plugins/staticAdmin"));
+    await fastify.register(require("./routes/adminTemplates"));
+  } else {
+    fastify.log.info("Admin UI disabled (Keycloak env vars not set)");
+  }
 
   await fastify.register(require("@fastify/cors"), {
     methods: ["POST"],
