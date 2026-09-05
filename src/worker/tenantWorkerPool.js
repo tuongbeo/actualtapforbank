@@ -32,7 +32,7 @@ const createWorkerClient = (child) => {
   };
 };
 
-const spawnAll = (tenants, workerPath = DEFAULT_WORKER_PATH) => {
+const spawnAll = (tenants, workerPath = DEFAULT_WORKER_PATH, forkOptions = {}) => {
   return new Promise((resolve, reject) => {
     const children = [];
     const clients = new Map();
@@ -47,7 +47,7 @@ const spawnAll = (tenants, workerPath = DEFAULT_WORKER_PATH) => {
     }
 
     tenants.forEach((tenant) => {
-      const child = fork(workerPath);
+      const child = fork(workerPath, [], forkOptions);
       children.push(child);
 
       child.once("message", (msg) => {
@@ -67,13 +67,27 @@ const spawnAll = (tenants, workerPath = DEFAULT_WORKER_PATH) => {
         }
       });
 
-      child.once("exit", (code) => {
-        if (settled || readyCount === tenants.length) return;
-        if (code !== 0) {
-          settled = true;
-          killAll();
-          reject(new Error(`Tenant "${tenant.id}" worker exited before becoming ready (code ${code})`));
-        }
+      child.once("exit", (code, signal) => {
+        // Any exit before the ready handshake completes means this tenant
+        // never became ready, regardless of its exit code (a clean code-0
+        // exit before "ready" is just as much a failure as a crash).
+        if (settled) return;
+        settled = true;
+        killAll();
+        reject(
+          new Error(`Tenant "${tenant.id}" worker exited before becoming ready (code ${code}, signal ${signal})`)
+        );
+      });
+
+      child.on("error", (err) => {
+        // Emitted e.g. when fork() itself fails to spawn the process, or the
+        // IPC channel errors out. Never surfaces via "exit" in that case, so
+        // it needs its own handler to preserve the no-leaked-processes
+        // guarantee.
+        if (settled) return;
+        settled = true;
+        killAll();
+        reject(new Error(`Tenant "${tenant.id}" worker failed to spawn: ${err.message}`));
       });
 
       child.send(tenant);

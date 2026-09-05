@@ -48,4 +48,36 @@ describe("spawnAll", () => {
       /bob.*failed to initialize|failed to initialize.*bob/i
     );
   });
+
+  it("rejects spawnAll and kills every other worker when a tenant exits cleanly (code 0) before reporting ready", async () => {
+    await assert.rejects(
+      () =>
+        spawnAll(
+          [
+            { id: "alice", tenantId: "alice" },
+            { id: "bob", tenantId: "bob", exitCleanBeforeReady: true },
+          ],
+          FAKE_WORKER_PATH
+        ),
+      /bob.*exited before becoming ready|exited before becoming ready.*bob/i
+    );
+  });
+
+  it("rejects spawnAll and kills every other worker when a child process fails to spawn", async () => {
+    // Force fork() itself to fail (spawn ENOENT) by pointing execPath at a
+    // non-existent binary, which Node surfaces via the child's "error" event
+    // rather than "exit" -- the case the exit-code handler alone cannot catch.
+    await assert.rejects(
+      () =>
+        spawnAll(
+          [
+            { id: "alice", tenantId: "alice" },
+            { id: "bob", tenantId: "bob" },
+          ],
+          FAKE_WORKER_PATH,
+          { execPath: "/no/such/node-binary-xyz" }
+        ),
+      /failed to spawn/i
+    );
+  });
 });

@@ -5,6 +5,15 @@ process.once("message", (config) => {
     return;
   }
 
+  if (config.exitCleanBeforeReady) {
+    // Simulates a worker that exits normally (code 0) without ever sending
+    // { ready: true } or { ready: false } -- e.g. a malformed worker script
+    // or an early clean return. This must still be treated as a failure to
+    // become ready.
+    process.exit(0);
+    return;
+  }
+
   process.send({ ready: true });
 
   process.on("message", (msg) => {
