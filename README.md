@@ -103,11 +103,11 @@ curl -X POST https://actualtap.yourdomain.com/transaction \
 
 Shipped out of the box: BIDV, expense (outgoing transfer) direction only. Additional banks and formats are added by editing the template config — no code changes required.
 
-The source Actual account is resolved via the `ACCOUNT_MAP` environment variable (see Environment Variables below), keyed by the bank account number found in the notification text — not by name in the request body.
+The source Actual account is resolved via the per-tenant `account-map.json` (see [Multi-Tenant Configuration](#multi-tenant-configuration)), keyed by the bank account number found in the notification text — not by name in the request body.
 
 #### Template Configuration
 
-Bank-notification parsing is driven entirely by `config/templates.json` (override the path with the `TEMPLATES_CONFIG_PATH` environment variable). The file is read and validated **once at startup** — edit it and restart the container for changes to take effect. An invalid file stops the server at boot; a missing file leaves zero templates loaded, and every `/vietqr-transaction` request then returns `400 Unrecognized bank format`.
+Bank-notification parsing is driven entirely by the per-tenant `config/tenants/<tenant-id>/templates.json` file (or an empty list if the file is missing). The file is read and validated **once at startup** — edit it and restart the container for changes to take effect. An invalid file stops the server at boot; a missing file leaves zero templates loaded, and every `/vietqr-transaction` request then returns `400 Unrecognized bank format`.
 
 The file is a JSON array of template objects:
 
@@ -155,7 +155,7 @@ Most field names are free-form, but these are consumed by `/vietqr-transaction` 
 
 | Field                 | Used for                                                                                        |
 | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `sourceAccountNumber` | Resolved against `ACCOUNT_MAP` to pick the Actual account. Not stored on the transaction itself   |
+| `sourceAccountNumber` | Resolved against the per-tenant `account-map.json` to pick the Actual account. Not stored on the transaction itself   |
 | `amount`              | The transaction amount; must parse to a finite number (use `"type": "amount"`), else `422`       |
 | `transactionDate`     | The transaction date; must produce `YYYY-MM-DD` (use `"type": "date"` with a `format`)           |
 | `counterpartyName`    | Payee name                                                                                       |
@@ -164,9 +164,76 @@ Most field names are free-form, but these are consumed by `/vietqr-transaction` 
 
 The transaction's direction always comes from the template's own `direction` key — a field named `direction` in `fields` is ignored for this purpose.
 
+## Multi-Tenant Configuration
+
+Actual Tap supports multiple tenants via a JSON configuration file. Each tenant has its own Actual Budget sync credentials and API key, enabling a single deployment to serve multiple users or organizations.
+
+### Tenant Registry (`config/tenants.json`)
+
+The tenant registry is a JSON array located at `config/tenants.json` (or the path specified by `TENANTS_CONFIG_PATH`). Each entry defines a tenant with the following **required** fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string | Unique identifier for the tenant (e.g., `"default"`, `"user-123"`) |
+| `apiKey` | string | Unique API key for this tenant (clients send this as `X-API-KEY` header); no longer a single shared key |
+| `actualSyncId` | string | The Sync ID of this tenant's Actual Budget (found in Actual Settings → Show advanced settings → Sync ID) |
+| `actualPassword` | string | Password for the Actual Budget Server |
+| `actualEncryptionPassword` | string | _(optional)_ Encryption password if End-to-end encryption is enabled on the Actual Budget; defaults to empty string |
+
+### Per-Tenant Configuration Files
+
+Each tenant may have optional per-tenant configuration files in `config/tenants/<tenant-id>/`:
+
+- **`account-map.json`** — Maps bank account numbers to Actual Budget account names, used by `/vietqr-transaction` to route imported transactions. Same shape as the old `ACCOUNT_MAP` environment variable. Defaults to `{}` if missing.
+- **`templates.json`** — Bank-notification templates for `/vietqr-transaction` parsing. Same shape as the old `config/templates.json`. Defaults to `[]` (no templates) if missing. See [Template Configuration](#template-configuration) for schema details.
+
+### Example: Single-Tenant Deployment
+
+```json
+[
+  {
+    "id": "default",
+    "actualSyncId": "8B51B58D-3A0D-4B5B-A41F-DE574306A4F2",
+    "actualPassword": "superSecretPassword",
+    "apiKey": "527D6AAA-B22A-4D48-9DC8-C203139E5531"
+  }
+]
+```
+
+### Migration from Pre-Multi-Tenant Deployment
+
+If you are migrating from a single-tenant deployment (using environment variables), follow these steps:
+
+1. **Create `config/tenants.json`** with one entry, reusing your existing credentials:
+   - Set `id` to any unique value (e.g., `"default"`)
+   - Set `actualSyncId` from your old `ACTUAL_SYNC_ID` environment variable
+   - Set `actualPassword` from your old `ACTUAL_PASSWORD` environment variable
+   - Set `apiKey` from your old `API_KEY` environment variable
+   - If you had `ACTUAL_ENCRYPTION_PASSWORD` set, add `actualEncryptionPassword` with that value
+
+2. **Migrate optional per-tenant files:**
+   - If you had an `ACCOUNT_MAP` environment variable, create `config/tenants/default/account-map.json` with that JSON value
+   - If you had a `config/templates.json` file, move it to `config/tenants/default/templates.json`
+   - Create the `config/tenants/default/` directory if it does not exist
+
+3. **Remove old environment variables:**
+   - Delete from your environment (or `.env` file): `API_KEY`, `ACTUAL_PASSWORD`, `ACTUAL_SYNC_ID`, `ACTUAL_ENCRYPTION_PASSWORD`, `ACCOUNT_MAP`, `TEMPLATES_CONFIG_PATH`
+   - These are no longer read and will not affect the application
+
+4. **Restart the application** to load the new configuration
+
+### Adding Additional Tenants
+
+To add more tenants to an existing deployment:
+
+1. Generate a new API key for the tenant (use [uuidgenerator.net](https://www.uuidgenerator.net))
+2. Add a new object to the `config/tenants.json` array with a unique `id`, the tenant's Actual Budget credentials, and the generated API key
+3. Optionally create `config/tenants/<new-id>/account-map.json` and/or `config/tenants/<new-id>/templates.json` if needed
+4. Restart the application to load the new tenant
+
 ## Setup and Installation
 
-**Note:** `ACTUAL_ENCRYPTION_PASSWORD` is optional, it's only required if End-to-end encryption is Enabled on Actual Server and a password has been set.
+**Note:** Actual Tap requires a `config/tenants.json` file to run. See [Multi-Tenant Configuration](#multi-tenant-configuration) for setup details.
 
 ### Running with Docker
 
@@ -175,13 +242,12 @@ The transaction's direction always comes from the template's own `direction` key
 ```bash
 docker run -p 3001:3001 \
   -e TZ=your_timezone \
-  -e API_KEY=your_api_key \
   -e ACTUAL_URL=your_actual_url \
-  -e ACTUAL_PASSWORD=your_password \
-  -e ACTUAL_SYNC_ID=your_budget_id \
-  -e ACTUAL_ENCRYPTION_PASSWORD=your_encryption_password \ # optional
+  -v /path/to/config:/app/config \
   mattyfaz/actualtap
 ```
+
+Note: Mount your `config/` directory containing `tenants.json` to the container at `/app/config`. See [Multi-Tenant Configuration](#multi-tenant-configuration) for the required structure.
 
 #### Docker Compose
 
@@ -193,27 +259,22 @@ services:
     restart: always
     ports:
       - 3001:3001
+    volumes:
+      - ./config:/app/config
     environment:
-      - TZ=
-      - API_KEY=
-      - ACTUAL_URL=
-      - ACTUAL_PASSWORD=
-      - ACTUAL_SYNC_ID=
-      - ACTUAL_ENCRYPTION_PASSWORD=
+      - TZ=your_timezone
+      - ACTUAL_URL=your_actual_url
 ```
+
+Note: Update `./config` to point to your local config directory containing `tenants.json`. See [Multi-Tenant Configuration](#multi-tenant-configuration) for the required structure.
 
 ### Environment Variables
 
 | Variable                     | Example                              | Description                                                                                          |
 | ---------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `TZ`                         | Australia/Melbourne                  | Your timezone, ideally you should match the TZ set in Actual                                         |
-| `API_KEY`                    | 527D6AAA-B22A-4D48-9DC8-C203139E5531 | Unique API key for authentication (generate with [uuidgenerator.net](https://www.uuidgenerator.net)) |
 | `ACTUAL_URL`                 | https://actual.yourdomain.com        | URL to Actual Budget Server                                                                          |
-| `ACTUAL_PASSWORD`            | superSecretPassword                  | Password for your Actual Budget Server                                                               |
-| `ACTUAL_SYNC_ID`             | 8B51B58D-3A0D-4B5B-A41F-DE574306A4F2 | The Unique ID of your Budget                                                                         |
-| `ACTUAL_ENCRYPTION_PASSWORD` | encryptedSecretPassword              | Your Encrypted Password _(optional, N/A if not using End-to-end encryption)_                         |
-| `ACCOUNT_MAP`                | `{"8820966012":"BIDV Cash"}`         | _(optional)_ JSON map of bank account number → Actual account name, used by `/vietqr-transaction` to route imported transactions. Defaults to `{}` (no accounts mapped). |
-| `TEMPLATES_CONFIG_PATH`      | `config/templates.json`              | _(optional)_ Path to the bank-notification template config used by `/vietqr-transaction` (see [Template Configuration](#template-configuration)). Relative paths resolve from the app root. Defaults to `config/templates.json`. |
+| `TENANTS_CONFIG_PATH`        | `config/tenants.json`                | _(optional)_ Path to the tenant registry (see Multi-Tenant Configuration below). Defaults to `config/tenants.json`. |
 
 ### Local Development
 
@@ -230,17 +291,29 @@ services:
    npm install
    ```
 
-3. Set up your environment variables in your terminal:
+3. Create your tenant configuration at `config/tenants.json`:
 
-   ```bash
-   export API_KEY="your-api-key"
-   export ACTUAL_URL="your-actual-url"
-   export ACTUAL_PASSWORD="your-password"
-   export ACTUAL_SYNC_ID="your-budget-id"
-   export ACTUAL_ENCRYPTION_PASSWORD="encryptedSecretPassword" # optional
+   ```json
+   [
+     {
+       "id": "default",
+       "actualSyncId": "your-budget-sync-id",
+       "actualPassword": "your-password",
+       "apiKey": "your-api-key"
+     }
+   ]
    ```
 
-4. Start the development server:
+   See [Multi-Tenant Configuration](#multi-tenant-configuration) for more details.
+
+4. Set up your environment variables in your terminal:
+
+   ```bash
+   export TZ="your/timezone"
+   export ACTUAL_URL="your-actual-url"
+   ```
+
+5. Start the development server:
    ```bash
    npm run dev
    ```
