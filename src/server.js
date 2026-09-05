@@ -36,7 +36,7 @@ async function registerModules() {
   fastify.log.info(`Loaded ${tenants.length} tenant(s) from ${fastify.config.TENANTS_CONFIG_PATH}`);
 
   const { spawnAll } = require("./worker/tenantWorkerPool");
-  const { clients: workerClients, killAll } = await spawnAll(
+  const { clients: workerClients, killAll, children } = await spawnAll(
     tenants.map((t) => ({
       id: t.id,
       actualUrl: fastify.config.ACTUAL_URL,
@@ -59,7 +59,7 @@ async function registerModules() {
   });
 
   const { buildTenantLookup, resolveTenant } = require("./lib/tenantAuth");
-  const { tenantsByApiKey, tenantsByKeycloakSub } = buildTenantLookup(tenants, workerClients);
+  const { tenantsById, tenantsByApiKey, tenantsByKeycloakSub } = buildTenantLookup(tenants, workerClients);
 
   fastify.addHook("preHandler", async (request, reply) => {
     if (request.url === "/health" || request.url.startsWith("/health?") || request.url.startsWith("/admin")) {
@@ -81,19 +81,40 @@ async function registerModules() {
   if (adminUiConfig.enabled) {
     fastify.log.info("Admin UI enabled");
     await fastify.register(require("@fastify/cookie"));
+
+    // Path-prefix aware: derives "" for a root-domain APP_BASE_URL (e.g.
+    // "https://example.com") so the cookie path below becomes "/admin", and
+    // e.g. "/app" for "https://example.com/app" so it becomes "/app/admin".
+    const basePath = new URL(adminUiConfig.appBaseUrl).pathname.replace(/\/$/, "");
     await fastify.register(require("@fastify/session"), {
       secret: adminUiConfig.sessionSecret,
-      // saveUninitialized: false + cookie.path "/admin" scope session handling to the admin
-      // UI only. @fastify/session's hooks otherwise run for EVERY request (this plugin is
-      // registered globally), so without this every /health, /transaction, /vietqr-transaction
-      // request would leak an unbounded, no-TTL in-memory session and set an unrelated
-      // Set-Cookie header.
+      // saveUninitialized: false + a cookie path scoped to the admin UI (below) scope
+      // session handling to the admin UI only. @fastify/session's hooks otherwise run for
+      // EVERY request (this plugin is registered globally), so without this every /health,
+      // /transaction, /vietqr-transaction request would leak an unbounded, no-TTL
+      // in-memory session and set an unrelated Set-Cookie header.
       saveUninitialized: false,
-      cookie: { secure: adminUiConfig.appBaseUrl.startsWith("https://"), path: "/admin", sameSite: "lax" },
+      cookie: {
+        secure: adminUiConfig.appBaseUrl.startsWith("https://"),
+        path: `${basePath}/admin`,
+        sameSite: "lax",
+      },
     });
     await fastify.register(require("./plugins/auth"), { tenantsByKeycloakSub });
     await fastify.register(require("./plugins/staticAdmin"));
     await fastify.register(require("./routes/adminTemplates"));
+    await fastify.register(require("./routes/adminAccountMap"));
+
+    const { createTenantProvisioner } = require("./lib/tenantProvisioning");
+    const { registerTenant } = createTenantProvisioner({
+      tenantsConfigPath: fastify.config.TENANTS_CONFIG_PATH,
+      actualUrl: fastify.config.ACTUAL_URL,
+      tenantsById,
+      tenantsByApiKey,
+      tenantsByKeycloakSub,
+      onWorkerSpawned: (child) => children.push(child),
+    });
+    await fastify.register(require("./routes/adminRegister"), { registerTenant });
   } else {
     fastify.log.info("Admin UI disabled (Keycloak env vars not set)");
   }
