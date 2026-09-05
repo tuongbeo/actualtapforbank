@@ -110,6 +110,9 @@ async function registerModules() {
       tenantsByApiKey,
       tenantsByKeycloakSub,
       onWorkerSpawned: (child) => children.push(child),
+      // The real cause of a failed registration is logged here, never returned to the caller:
+      // the connector's own error enumerates every budget sync ID on the shared Actual server.
+      logger: fastify.log,
     });
     await fastify.register(require("./routes/adminRegister"), { registerTenant });
   } else {
