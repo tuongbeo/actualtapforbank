@@ -22,41 +22,54 @@ const fastify = require("fastify")({
 });
 const { version } = require("../package.json");
 
-// Modular function registrations
 async function registerModules() {
   await fastify.register(require("./plugins/env"));
 
-  // Global authentication hook - registered after env to access fastify.config
+  const { loadTenants } = require("./lib/tenantRegistry");
+  const tenants = loadTenants(fastify.config.TENANTS_CONFIG_PATH);
+  fastify.log.info(`Loaded ${tenants.length} tenant(s) from ${fastify.config.TENANTS_CONFIG_PATH}`);
+
+  const { spawnAll } = require("./worker/tenantWorkerPool");
+  const { clients: workerClients, killAll } = await spawnAll(
+    tenants.map((t) => ({
+      id: t.id,
+      actualUrl: fastify.config.ACTUAL_URL,
+      password: t.actualPassword,
+      syncId: t.actualSyncId,
+      encryptionPassword: t.actualEncryptionPassword,
+    }))
+  );
+  fastify.log.info(`All ${tenants.length} tenant worker(s) ready`);
+
+  const { buildTenantLookup, resolveTenant } = require("./lib/tenantAuth");
+  const { tenantsByApiKey } = buildTenantLookup(tenants, workerClients);
+
   fastify.addHook("preHandler", async (request, reply) => {
     if (request.url === "/health" || request.url.startsWith("/health?")) {
       return;
     }
 
     const apiKey = request.headers["x-api-key"];
-    if (apiKey !== fastify.config.API_KEY) {
+    const tenant = resolveTenant(tenantsByApiKey, apiKey);
+    if (!tenant) {
       reply.code(401).send({ error: "Unauthorized" });
       return;
     }
+    request.tenant = tenant;
   });
 
   await fastify.register(require("@fastify/cors"), {
     methods: ["POST"],
   });
-  // Load and validate templates before the (slow) Actual connection so a bad
-  // config/templates.json fails fast instead of after the connector timeout.
-  const { loadTemplates } = require("./templates");
-  const templatesConfigPath = fastify.config.TEMPLATES_CONFIG_PATH;
-  const templates = loadTemplates(templatesConfigPath);
-  fastify.log.info(`Loaded ${templates.length} notification template(s) from ${templatesConfigPath}`);
-  if (templates.length === 0) {
-    fastify.log.warn(`No notification templates loaded from ${templatesConfigPath} - /vietqr-transaction will reject all requests`);
-  }
 
-  await fastify.register(require("./plugins/actualConnector"));
   await fastify.register(require("./routes/transaction"));
-  await fastify.register(require("./routes/vietqrTransaction"), { templates });
-
+  await fastify.register(require("./routes/vietqrTransaction"));
   await fastify.register(require("./routes/health"));
+
+  fastify.addHook("onClose", () => {
+    killAll();
+    fastify.log.info("All tenant workers shut down");
+  });
 }
 
 // Global Error Handler
@@ -71,7 +84,6 @@ const start = async () => {
     fastify.log.info(`Starting ActualTap v${version}`);
     await registerModules();
     try {
-      // Try IPv6 dual-stack first
       await fastify.listen({ port: 3001, host: "::" });
     } catch (err) {
       if (err.code === 'EAFNOSUPPORT' || err.message.includes('address family not supported')) {
