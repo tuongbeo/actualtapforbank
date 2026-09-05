@@ -5,7 +5,7 @@ const { createDedupCache } = require("../lib/dedupCache");
 const { getAccountByName } = require("../lib/actualAccounts");
 const { addTransaction, syncBudget } = require("../lib/actualTransactions");
 
-const vietqrTransactionSchema = {
+const bankTransferSchema = {
   schema: {
     body: {
       type: "object",
@@ -29,7 +29,7 @@ const buildDedupKey = (tenantId, templateName, parsed, normalizedText) => {
 module.exports = async (fastify, opts) => {
   const dedupCache = opts.dedupCache || createDedupCache();
 
-  fastify.post("/vietqr-transaction", vietqrTransactionSchema, async (request, reply) => {
+  fastify.post("/bank-transfer", bankTransferSchema, async (request, reply) => {
     const normalizedText = normalize(request.body.rawText);
     const templates = request.tenant.templatesStore.getTemplates();
 
@@ -67,7 +67,7 @@ module.exports = async (fastify, opts) => {
       });
     }
 
-    const accountName = resolveAccountName(parsed.sourceAccountNumber, request.tenant.accountMapJson);
+    const accountName = resolveAccountName(parsed.sourceAccountNumber, request.tenant.accountMapStore.getMapJson());
     if (!accountName) {
       return reply.code(400).send({
         error: "Unknown source account",

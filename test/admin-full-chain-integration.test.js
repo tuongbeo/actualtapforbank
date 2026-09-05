@@ -93,6 +93,7 @@ async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
       templatesPath,
       templates: [],
       accountMapJson: '{"123456":"Checking"}',
+      accountMapPath: path.join(dir, "tenants", "alice", "account-map.json"),
       keycloakSub: "sub-alice",
     },
   ];
@@ -126,12 +127,12 @@ async function buildApp({ oidcClient = fakeOidcClient() } = {}) {
   await app.register(require("../src/routes/adminTemplates"));
 
   await app.register(fastifyCors, { methods: ["POST"] });
-  await app.register(require("../src/routes/vietqrTransaction"), { dedupCache: createDedupCache() });
+  await app.register(require("../src/routes/bankTransfer"), { dedupCache: createDedupCache() });
 
   return { app, templatesPath };
 }
 
-describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /vietqr-transaction)", () => {
+describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /bank-transfer)", () => {
   it("drives the whole real chain end to end", async () => {
     const oidcClient = fakeOidcClient({ sub: "sub-alice" });
     const { app, templatesPath } = await buildApp({ oidcClient });
@@ -179,17 +180,17 @@ describe("Full admin chain (login -> callback -> / -> CRUD -> live effect on /vi
     const onDisk = JSON.parse(fs.readFileSync(templatesPath, "utf8"));
     assert.deepStrictEqual(onDisk, [TEMPLATE]);
 
-    // 5. POST /vietqr-transaction with the tenant's API key and matching rawText -> proves the
+    // 5. POST /bank-transfer with the tenant's API key and matching rawText -> proves the
     // SAME templatesStore instance is shared end to end between the admin API and the
     // data-plane route (no restart / no separate store).
-    const vietqrResponse = await app.inject({
+    const bankTransferResponse = await app.inject({
       method: "POST",
-      url: "/vietqr-transaction",
+      url: "/bank-transfer",
       headers: { "x-api-key": "alice-api-key", "content-type": "application/json" },
       payload: { rawText: SAMPLE_TEXT },
     });
-    assert.strictEqual(vietqrResponse.statusCode, 200);
-    const body = JSON.parse(vietqrResponse.body);
+    assert.strictEqual(bankTransferResponse.statusCode, 200);
+    const body = JSON.parse(bankTransferResponse.body);
     assert.strictEqual(body.amount, -2500); // "expense" direction -> signed negative
     assert.strictEqual(app.addedTransactions.length, 1);
 

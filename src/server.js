@@ -103,7 +103,7 @@ async function registerModules() {
   });
 
   await fastify.register(require("./routes/transaction"));
-  await fastify.register(require("./routes/vietqrTransaction"));
+  await fastify.register(require("./routes/bankTransfer"));
   await fastify.register(require("./routes/health"));
 }
 
