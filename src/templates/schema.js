@@ -17,6 +17,11 @@ const validateDateFormat = (format, path, errors) => {
 };
 
 const validateField = (field, path, errors) => {
+  if (field === null || typeof field !== "object" || Array.isArray(field)) {
+    errors.push(`${path}: field must be a non-null object`);
+    return;
+  }
+
   const hasRegex = field.regex !== undefined;
   const hasLabel = field.label !== undefined;
 
@@ -31,7 +36,7 @@ const validateField = (field, path, errors) => {
     } else {
       try {
         const compiled = new RegExp(field.regex);
-        if (!compiled.source.includes("?<value>")) {
+        if (!/\(\?<value>/.test(compiled.source)) {
           errors.push(`${path}: "regex" must contain a named capture group "value"`);
         }
       } catch (err) {
@@ -64,6 +69,11 @@ const validateField = (field, path, errors) => {
 
 const validateTemplate = (template, index, errors) => {
   const path = `templates[${index}]`;
+
+  if (template === null || typeof template !== "object" || Array.isArray(template)) {
+    errors.push(`${path}: template must be a non-null object`);
+    return;
+  }
 
   if (!isNonEmptyString(template.name)) {
     errors.push(`${path}: "name" is required and must be a non-empty string`);
@@ -120,7 +130,10 @@ const validateTemplates = (templates) => {
   const errors = [];
   templates.forEach((template, index) => validateTemplate(template, index, errors));
 
-  const names = templates.map((t) => t.name).filter((n) => typeof n === "string");
+  const names = templates
+    .filter((t) => t !== null && typeof t === "object" && !Array.isArray(t))
+    .map((t) => t.name)
+    .filter((n) => typeof n === "string");
   const duplicates = names.filter((name, i) => names.indexOf(name) !== i);
   if (duplicates.length > 0) {
     errors.push(`Duplicate template name(s): ${[...new Set(duplicates)].join(", ")}`);

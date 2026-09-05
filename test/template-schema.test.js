@@ -107,4 +107,20 @@ describe("validateTemplates", () => {
       /Duplicate template name/
     );
   });
+
+  it("throws when a regex has a spoofed named-group substring but no actual named group", () => {
+    const template = validTemplate();
+    template.fields.code = { regex: "(?:foo)?<value>(bar)" };
+    assert.throws(() => validateTemplates([template]), /named capture group "value"/);
+  });
+
+  it("throws when templates array contains null", () => {
+    assert.throws(() => validateTemplates([null]), /non-null object/);
+  });
+
+  it("throws when a field is null", () => {
+    const template = validTemplate();
+    template.fields.code = null;
+    assert.throws(() => validateTemplates([template]), /non-null object/);
+  });
 });
