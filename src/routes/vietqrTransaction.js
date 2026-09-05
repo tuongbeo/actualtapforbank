@@ -18,20 +18,20 @@ const vietqrTransactionSchema = {
   },
 };
 
-const buildDedupKey = (templateName, parsed, normalizedText) => {
+const buildDedupKey = (tenantId, templateName, parsed, normalizedText) => {
   if (parsed.referenceCode) {
-    return `${templateName}:ref:${parsed.referenceCode}`;
+    return `${tenantId}:${templateName}:ref:${parsed.referenceCode}`;
   }
   const hash = createHash("sha256").update(normalizedText).digest("hex");
-  return `${templateName}:hash:${hash}`;
+  return `${tenantId}:${templateName}:hash:${hash}`;
 };
 
 module.exports = async (fastify, opts) => {
   const dedupCache = opts.dedupCache || createDedupCache();
-  const templates = opts.templates || [];
 
   fastify.post("/vietqr-transaction", vietqrTransactionSchema, async (request, reply) => {
     const normalizedText = normalize(request.body.rawText);
+    const templates = request.tenant.templates;
 
     let template;
     try {
@@ -67,15 +67,21 @@ module.exports = async (fastify, opts) => {
       });
     }
 
-    const accountName = resolveAccountName(parsed.sourceAccountNumber, fastify.config.ACCOUNT_MAP);
+    const accountName = resolveAccountName(parsed.sourceAccountNumber, request.tenant.accountMapJson);
     if (!accountName) {
       return reply.code(400).send({
         error: "Unknown source account",
-        message: `Source account "${parsed.sourceAccountNumber}" is not mapped in ACCOUNT_MAP`,
+        message: `Source account "${parsed.sourceAccountNumber}" is not mapped in this tenant's account map`,
       });
     }
 
-    const { accountId, accounts } = await getAccountByName(fastify, accountName);
+    const fastifyLike = {
+      actual: request.tenant.workerClient,
+      actualInternal: { send: request.tenant.workerClient.actualInternalSend },
+      log: fastify.log,
+    };
+
+    const { accountId, accounts } = await getAccountByName(fastifyLike, accountName);
     if (!accountId) {
       return reply.code(400).send({
         error: "Invalid account",
@@ -83,7 +89,7 @@ module.exports = async (fastify, opts) => {
       });
     }
 
-    const dedupKey = buildDedupKey(template.name, parsed, normalizedText);
+    const dedupKey = buildDedupKey(request.tenant.id, template.name, parsed, normalizedText);
     if (dedupCache.checkAndMark(dedupKey)) {
       return reply.send({ duplicate: true, ...parsed });
     }
@@ -100,13 +106,13 @@ module.exports = async (fastify, opts) => {
     };
 
     try {
-      await addTransaction(fastify, accountId, transaction);
+      await addTransaction(fastifyLike, accountId, transaction);
     } catch (err) {
       dedupCache.unmark(dedupKey);
       throw err;
     }
 
-    const syncResult = await syncBudget(fastify);
+    const syncResult = await syncBudget(fastifyLike);
     if (!syncResult.ok) {
       return reply.code(500).send({
         error: "Sync failed",
