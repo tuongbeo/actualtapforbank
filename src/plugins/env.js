@@ -7,6 +7,11 @@ const schema = {
   properties: {
     ACTUAL_URL: { type: "string" },
     TENANTS_CONFIG_PATH: { type: "string", default: "config/tenants.json" },
+    KEYCLOAK_ISSUER_URL: { type: "string" },
+    KEYCLOAK_CLIENT_ID: { type: "string" },
+    KEYCLOAK_CLIENT_SECRET: { type: "string" },
+    SESSION_SECRET: { type: "string" },
+    APP_BASE_URL: { type: "string" },
   },
 };
 
