@@ -20,32 +20,66 @@
   </style>
 </head>
 <body>
-  <aside>
-    <div class="row">
-      <button id="new-btn">+ New</button>
+  <div id="register-view" hidden>
+    <div style="max-width: 480px; margin: 60px auto; font-family: system-ui, sans-serif;">
+      <h2>Connect your Actual Budget account</h2>
+      <div class="row" style="flex-direction: column; align-items: stretch; gap: 8px;">
+        <label>Actual Sync ID <input id="reg-sync-id" /></label>
+        <label>Actual Password <input id="reg-password" type="password" /></label>
+        <label>Actual Encryption Password (optional) <input id="reg-enc-password" type="password" /></label>
+        <button id="reg-submit-btn">Connect</button>
+        <div id="reg-error" class="error"></div>
+        <div id="reg-success" hidden>
+          <p><strong>Save this API key now — it is shown only once:</strong></p>
+          <code id="reg-api-key" style="user-select: all;"></code>
+          <p><button id="reg-continue-btn">Continue</button></p>
+        </div>
+      </div>
     </div>
-    <ul id="template-list"></ul>
-  </aside>
-  <main>
-    <div class="row">
-      <strong id="editor-title">New template</strong>
-      <button id="save-btn">Save</button>
-      <button id="delete-btn" style="display:none">Delete</button>
-    </div>
-    <textarea id="editor"></textarea>
-    <div id="editor-error" class="error"></div>
+  </div>
 
-    <strong>Preview</strong>
-    <textarea id="preview-raw" placeholder="Paste a sample rawText here"></textarea>
-    <div class="row">
-      <button id="preview-btn">Test</button>
+  <div id="main-view" hidden>
+    <div class="row" style="padding: 8px 12px; border-bottom: 1px solid #ddd;">
+      <button id="tab-templates" class="active">Templates</button>
+      <button id="tab-account-map">Account Map</button>
     </div>
-    <div id="preview-result"></div>
-  </main>
+
+    <div id="templates-tab" style="display: flex; height: calc(100vh - 45px);">
+      <aside>
+        <div class="row">
+          <button id="new-btn">+ New</button>
+        </div>
+        <ul id="template-list"></ul>
+      </aside>
+      <main>
+        <div class="row">
+          <strong id="editor-title">New template</strong>
+          <button id="save-btn">Save</button>
+          <button id="delete-btn" style="display:none">Delete</button>
+        </div>
+        <textarea id="editor"></textarea>
+        <div id="editor-error" class="error"></div>
+
+        <strong>Preview</strong>
+        <textarea id="preview-raw" placeholder="Paste a sample rawText here"></textarea>
+        <div class="row">
+          <button id="preview-btn">Test</button>
+        </div>
+        <div id="preview-result"></div>
+      </main>
+    </div>
+
+    <div id="account-map-tab" style="display: none; padding: 12px;">
+      <p>Maps a bank account number found in a notification's text to an Actual Budget account name.</p>
+      <textarea id="account-map-editor" style="width: 100%; height: 300px; font-family: monospace;"></textarea>
+      <div class="row">
+        <button id="account-map-save-btn">Save</button>
+      </div>
+      <div id="account-map-error" class="error"></div>
+    </div>
+  </div>
 
   <script>
-    let currentName = null; // null = unsaved new template
-
     async function api(method, path, body) {
       const response = await fetch(path, {
         method,
@@ -56,6 +90,8 @@
       if (!response.ok) throw new Error(data.message || data.error || `HTTP ${response.status}`);
       return data;
     }
+
+    let currentName = null; // null = unsaved new template
 
     async function refreshList() {
       const templates = await api("GET", "/admin/api/templates");
@@ -144,7 +180,63 @@
       }
     };
 
-    refreshList();
+    document.getElementById("tab-templates").onclick = () => {
+      document.getElementById("templates-tab").style.display = "flex";
+      document.getElementById("account-map-tab").style.display = "none";
+    };
+    document.getElementById("tab-account-map").onclick = async () => {
+      document.getElementById("templates-tab").style.display = "none";
+      document.getElementById("account-map-tab").style.display = "block";
+      const map = await api("GET", "/admin/api/account-map");
+      document.getElementById("account-map-editor").value = JSON.stringify(map, null, 2);
+    };
+    document.getElementById("account-map-save-btn").onclick = async () => {
+      const errorEl = document.getElementById("account-map-error");
+      errorEl.textContent = "";
+      let map;
+      try {
+        map = JSON.parse(document.getElementById("account-map-editor").value);
+      } catch (err) {
+        errorEl.textContent = `Invalid JSON: ${err.message}`;
+        return;
+      }
+      try {
+        await api("PUT", "/admin/api/account-map", map);
+      } catch (err) {
+        errorEl.textContent = err.message;
+      }
+    };
+
+    document.getElementById("reg-submit-btn").onclick = async () => {
+      const errorEl = document.getElementById("reg-error");
+      errorEl.textContent = "";
+      try {
+        const result = await api("POST", "/admin/api/register", {
+          actualSyncId: document.getElementById("reg-sync-id").value,
+          actualPassword: document.getElementById("reg-password").value,
+          actualEncryptionPassword: document.getElementById("reg-enc-password").value || undefined,
+        });
+        document.getElementById("reg-api-key").textContent = result.apiKey;
+        document.getElementById("reg-success").hidden = false;
+      } catch (err) {
+        errorEl.textContent = err.message;
+      }
+    };
+    document.getElementById("reg-continue-btn").onclick = () => {
+      document.getElementById("register-view").hidden = true;
+      document.getElementById("main-view").hidden = false;
+      refreshList();
+    };
+
+    (async () => {
+      const { registered } = await api("GET", "/admin/api/me");
+      if (registered) {
+        document.getElementById("main-view").hidden = false;
+        refreshList();
+      } else {
+        document.getElementById("register-view").hidden = false;
+      }
+    })();
   </script>
 </body>
 </html>
