@@ -74,6 +74,13 @@ unchanged from PR #3.
 
 ## 4. Template schema
 
+> **Amendment (post-merge, found while writing the implementation plan):** the version below
+> replaces the one originally merged. Tracing the extraction logic by hand against the real
+> `bidv-expense` fixture surfaced two correctness bugs in the original §4/§6 — see the
+> "Amendment rationale" box after the example. Both are fixed here: `label` may now be a chain
+> (array) of consecutive labels, and `stopLabel` is mandatory for every label-based field (the
+> auto-boundary-from-other-fields idea is dropped entirely).
+
 ```jsonc
 {
   "name": "bidv-expense",              // unique across the config array; used in dedup key
@@ -84,26 +91,60 @@ unchanged from PR #3.
     // ALL strings must appear (case-insensitive substring match) for this template to be selected
   },
   "fields": {
-    "referenceCode":       { "label": "Số tham chiếu:" },
-    "amount":              { "label": "Số tiền giao dịch:", "type": "amount" },
-    "transactionDate":     { "label": "Thời gian giao dịch:", "type": "date", "format": "DD/MM/YYYY HH:mm:ss" },
-    "sourceAccountNumber": { "label": "Tài khoản nguồn:" },
-    "counterpartyName":    { "label": "Tên người thụ hưởng:", "stopLabel": "Số tài khoản" },
-    "description":         { "label": "Nội dung giao dịch:", "stopLabel": "Kênh thực hiện giao dịch" }
+    "referenceCode":       { "label": ["Số tham chiếu:", "Reference number:"], "stopLabel": "Tài khoản nguồn:" },
+    "sourceAccountNumber": { "label": ["Tài khoản nguồn:", "Debit account:"], "stopLabel": "Số tiền giao dịch:" },
+    "amount":              { "label": ["Số tiền giao dịch:", "Transaction amount:"], "type": "amount", "stopLabel": "Phí giao dịch:" },
+    "transactionDate":     { "label": ["Thời gian giao dịch:", "Transaction time:"], "type": "date", "format": "DD/MM/YYYY HH:mm:ss", "stopLabel": "Số tham chiếu:" },
+    "counterpartyName":    { "label": ["Tên người thụ hưởng:", "Beneficiary name:"], "stopLabel": "Số tài khoản" },
+    "description":         { "label": ["Nội dung giao dịch:", "Transaction remark:"], "stopLabel": "Kênh thực hiện giao dịch:" }
   },
-  "requiredFields": ["referenceCode", "amount", "transactionDate", "sourceAccountNumber", "counterpartyName"],
+  "requiredFields": ["referenceCode", "amount", "transactionDate", "sourceAccountNumber", "counterpartyName", "description"],
   "descriptionSuffix": "Ref: {referenceCode}"   // optional; {fieldName} placeholders filled from extracted fields
 }
 ```
 
-A field may instead declare a manual regex override, bypassing `label`/`stopLabel`/`type`:
+`label` is a string for a single label, or an **array of consecutive labels** when the raw text
+carries more than one label in a row before the value (e.g. this bank's bilingual
+Vietnamese-then-English label pairs: `"Số tham chiếu:\nReference number:\n6247..."`). All labels
+in the array are matched consecutively (each separated by `\s*` in the built pattern) and
+consumed; the value capture starts only after the last one.
+
+`stopLabel` is **mandatory** on every label-based field (not optional) — see the amendment
+rationale below for why. It is always a single string (a lookahead anchor, never consumed,
+so it doesn't need chain semantics the way `label` does).
+
+A field may instead declare a manual regex override, bypassing `label`/`stopLabel`/`type`
+entirely:
 
 ```jsonc
-"counterpartyName": { "regex": "Tên người thụ hưởng:\\s*(?<value>[A-Z][A-Z\\s]*?)\\s*(?=Số tài khoản)" }
+"counterpartyName": { "regex": "Tên người thụ hưởng:\\s*(?:Beneficiary name:\\s*)?(?<value>[A-Z][A-Z\\s]*?)\\s*(?=Số tài khoản)" }
 ```
 
 The regex **must** contain a named capture group `value`; config validation (§7) rejects a
 `regex` field without one at startup.
+
+### Amendment rationale (why `label` is a chain and `stopLabel` is mandatory)
+
+Two bugs surfaced by tracing the extraction algorithm by hand against the real
+`test/fixtures/bidv-expense.txt`, both invisible from the schema shape alone:
+
+1. **Bilingual label pairs.** Every field in the real email is three lines — Vietnamese label,
+   English label, value (e.g. `Số tham chiếu:` / `Reference number:` / `6247BIDVE2NEKZD1`). A
+   schema with one `label` per field can't express "skip this second label too" without falling
+   back to a manual `regex` for every field — which would defeat the whole point of label-based
+   extraction being the default. Fixed by letting `label` be an array of consecutive labels.
+2. **Auto-boundary broke on undeclared fields sitting between two declared ones.** The version
+   of §6 originally merged said a field without an explicit `stopLabel` stops at whichever
+   *other declared field's* label comes next. But the real email has fields the template has no
+   reason to declare — e.g. `Phí giao dịch:` / `Transaction fee:` / `Miễn phí` sits between
+   `amount` and `counterpartyName`. Under the old rule, `amount` (no `stopLabel`) would capture
+   all the way through to `counterpartyName`'s label, swallowing `"10,000 VND Phí giao dịch:
+   Transaction fee: Miễn phí"` as its raw value. This particular fixture still parses to the
+   right number by luck (`parseAmount` strips everything but digits, and "Miễn phí" has none),
+   but a bank charging a non-zero fee would corrupt the amount. Fixed by dropping the
+   auto-boundary idea entirely: `stopLabel` is required on every label-based field, so a template
+   author always states exactly where a field's value ends, regardless of what undeclared text
+   sits after it.
 
 ### Key design decision: `match.contains` must include the direction-discriminating label
 
@@ -143,13 +184,15 @@ impossible).
 For each field in `template.fields`, in the order declared:
 
 1. **If `regex` is present**: run it against `normalizedText`; take the named group `value`.
-2. **Else (label-based)**:
-   - Stop boundary: `field.stopLabel` if declared; otherwise the alternation of **every other
-     label-based field's `label`** declared in the same template (fields using a `regex`
-     override contribute nothing to this alternation, since they have no `label`) — so
-     label-based fields don't need a manual `stopLabel` in the common case of consecutive
-     `"Label: value"` pairs, mirroring what the BIDV adapter's regexes did by hand, generalized.
-   - Pattern: `` `${escapeRegex(label)}\s*(.+?)\s*(?=${stopBoundary}|$)` ``, case-insensitive.
+2. **Else (label-based)**: `field.stopLabel` is required (config validation, §7, rejects a
+   label-based field without one — there is no auto-detected boundary; see the amendment
+   rationale in §4 for why an auto-boundary from other declared fields' labels was tried and
+   dropped).
+   - Normalize `field.label` to an array (`Array.isArray(label) ? label : [label]`).
+   - Prefix pattern: the array's labels chained with `\s*` between each
+     (`labels.map(escapeRegex).join('\\s*')`) — matches and consumes all of them in order.
+   - Pattern: `` `${prefixPattern}\s*(.+?)\s*(?=${escapeRegex(stopLabel)}|$)` ``,
+     case-insensitive.
    - Result is trimmed.
 3. If no match and the field is in `requiredFields` → `extract()` throws
    `Error('Could not find "<fieldName>" in rawText')`.
@@ -181,10 +224,17 @@ listing every problem found, not just the first:
   `"push"`), `direction` (`"expense"` or `"income"`), `match.contains` (non-empty array of
   non-empty strings), `fields` (non-empty object), `requiredFields` (array; every entry must be a
   key of `fields`).
-- Each field: exactly one of `regex` or `label` — `regex` must compile and contain a named group
-  `value`; `label` is a non-empty string; `stopLabel`, if present, is a non-empty string; `type`,
-  if present, is `"amount"` or `"date"`; `type: "date"` requires `format` composed only of the
-  recognized tokens.
+- Each field: exactly one of `regex` or `label`.
+  - `regex` must compile and contain a named group `value`; `stopLabel` and `type` must not be
+    present alongside it (the regex defines its own boundary and, if needed, its own type
+    conversion is out of scope — a `regex` field's captured `value` is always used as-is).
+  - `label` is a non-empty string, or a non-empty array of non-empty strings (a label chain);
+    when `label` is present, `stopLabel` is **required** (non-empty string) — a label-based field
+    without a `stopLabel` fails validation at startup.
+  - `type`, if present, is `"amount"` or `"date"`; `type: "date"` requires `format`, itself
+    composed only of the recognized tokens (`YYYY`, `MM`, `DD`, `HH`, `mm`, `ss`, literal
+    characters) and containing at least `YYYY`, `MM`, and `DD` (the extractor always reassembles
+    a `YYYY-MM-DD` string, so all three must be extractable).
 - `descriptionSuffix`, if present, is a string whose `{fieldName}` placeholders all reference
   keys of `fields`.
 
